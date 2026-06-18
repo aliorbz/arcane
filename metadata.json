@@ -1,0 +1,6 @@
+{
+  "name": "ARCANE",
+  "description": "A fully functional general-purpose NFT trading marketplace like OpenSea on Arc Testnet.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
