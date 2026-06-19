@@ -52,6 +52,7 @@ export interface ActivityLog {
   fromAddress: string;
   toAddress: string;
   amount?: number;
+  txHash?: string;
   timestamp: string;
 }
 

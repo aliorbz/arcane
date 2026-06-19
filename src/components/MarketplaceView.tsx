@@ -125,6 +125,14 @@ export function MarketplaceView({ setCurrentView, setSelectedCardId }: Marketpla
 
   // Buy item action
   const executeBuy = (card: RitualCard) => {
+    setSelectedCardForBuy(null);
+    showNotification("Open NFT details to buy onchain.");
+    setSelectedCardId(card.tokenId);
+    setCurrentView('card-details');
+  };
+
+  /*
+
     if (!state.walletConnected || !state.walletAddress) {
       handleConnectWalletFirst();
       return;
@@ -181,6 +189,8 @@ export function MarketplaceView({ setCurrentView, setSelectedCardId }: Marketpla
     updateLocalState(updatedState);
     showNotification(`🎉 Congratulations! You purchased "${card.name}" for ${cost} USDC!`);
   };
+
+  */
 
   // List item action
   const executeList = (card: RitualCard, priceInUSDC: number) => {

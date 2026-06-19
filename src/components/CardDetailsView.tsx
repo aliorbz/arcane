@@ -6,7 +6,7 @@ import { parseEther } from 'viem';
 import { getSavedState, saveState } from '../lib/mockData';
 import { ArcaneNFT, CardOffer, ActivityLog } from '../types';
 import { CONTRACTS } from '../lib/config';
-import { publicClient } from '../lib/onchain';
+import { fetchOnchainCards, publicClient } from '../lib/onchain';
 
 interface CardDetailsViewProps {
   cardId: string;
@@ -332,7 +332,12 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
       return;
     }
 
-    const price = card.price || 0.85;
+    if (!card.listingId) {
+      showNotification("No active listing found.");
+      return;
+    }
+
+    const price = card.price || 0;
     if (state.balance < price) {
       showNotification("❌ Insufficient balance to purchase this NFT!");
       return;
@@ -343,29 +348,36 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
 
     const seller = card.owner;
     const buyer = state.walletAddress;
+    let txHash: `0x${string}` | undefined;
+    let refreshedCard: ArcaneNFT | undefined;
 
     try {
       if (isConnected) {
         // Real onchain purchase contract call
-        await writeContractAsync({
+        txHash = await writeContractAsync({
           address: CONTRACTS.MARKETPLACE.address,
           abi: CONTRACTS.MARKETPLACE.abi,
-          // Since mock on-chain lists are stored, assumes buyItem(tokenId) or buyItem(listingId)
           functionName: "buyItem",
-          args: [BigInt(card.tokenId)],
+          args: [BigInt(card.listingId)],
           value: parseEther(price.toString()),
         } as any);
         setPurchaseStatus("⏳ Transaction sent. Waiting for blockchain execution confirmation...");
-        await new Promise(resolve => setTimeout(resolve, 2500));
+        const buyReceipt = await (publicClient as any).waitForTransactionReceipt({ hash: txHash });
+        if (buyReceipt.status !== "success") {
+          throw new Error("Buy transaction failed onchain.");
+        }
+        const refreshedOnchainCards = await fetchOnchainCards();
+        refreshedCard = refreshedOnchainCards.find(c => c.tokenId === card.tokenId);
       }
 
       const updatedCards = state.cards.map(c => {
         if (c.tokenId === card.tokenId) {
           return {
             ...c,
-            owner: buyer,
-            isListed: false,
-            price: undefined
+            owner: refreshedCard?.owner || buyer,
+            isListed: refreshedCard?.isListed ?? false,
+            price: refreshedCard?.price,
+            listingId: refreshedCard?.listingId
           };
         }
         return c;
@@ -378,23 +390,18 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
         fromAddress: seller,
         toAddress: buyer,
         amount: price,
+        txHash,
         timestamp: new Date().toISOString()
       };
-
-      let balanceChange = -price;
-      const isUserCreator = (card.creator || "0xBE0848a9315da2ffbc28a9ea56b0d4b42413c8be").toLowerCase() === state.walletAddress?.toLowerCase();
-      if (isUserCreator) {
-        balanceChange += price * 0.025;
-      }
 
       const updatedState = {
         ...state,
         cards: updatedCards,
-        balance: parseFloat((state.balance + balanceChange).toFixed(4)),
         logs: [newLog, ...state.logs]
       };
 
       updateLocalState(updatedState);
+      setState(getSavedState());
       showNotification(`🎉 Asset purchased! "${card.name}" has been transferred to your vault.`);
       setSelectedCardId(null);
       setCurrentView('profile');

@@ -31,7 +31,9 @@ export function Navbar({
   setProfileTab
 }: NavbarProps) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [isNetworkMenuOpen, setIsNetworkMenuOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const networkMenuRef = useRef<HTMLDivElement>(null);
 
   // Close profile menu dropdown on clicking outside
   useEffect(() => {
@@ -39,14 +41,17 @@ export function Navbar({
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setIsDropdownOpen(false);
       }
+      if (networkMenuRef.current && !networkMenuRef.current.contains(event.target as Node)) {
+        setIsNetworkMenuOpen(false);
+      }
     }
-    if (isDropdownOpen) {
+    if (isDropdownOpen || isNetworkMenuOpen) {
       document.addEventListener('mousedown', handleClickOutside);
     }
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [isDropdownOpen]);
+  }, [isDropdownOpen, isNetworkMenuOpen]);
 
   // Shorten address helper
   const shortAddress = walletAddress
@@ -123,6 +128,7 @@ export function Navbar({
             {({
               account,
               chain,
+              openChainModal,
               openAccountModal,
               openConnectModal,
               mounted,
@@ -155,13 +161,54 @@ export function Navbar({
 
               if (chain.unsupported) {
                 return (
-                  <button
-                    onClick={openAccountModal}
-                    type="button"
-                    className="px-4 py-2 text-xs font-black uppercase tracking-wider bg-red-600 hover:bg-red-500 text-white rounded-xl transition-all"
-                  >
-                    Wrong Network
-                  </button>
+                  <div ref={networkMenuRef} className="relative">
+                    <button
+                      onClick={() => setIsNetworkMenuOpen(!isNetworkMenuOpen)}
+                      type="button"
+                      className="px-4 py-2 text-xs font-black uppercase tracking-wider bg-red-600 hover:bg-red-500 text-white rounded-xl transition-all cursor-pointer"
+                    >
+                      Wrong Network
+                    </button>
+
+                    <AnimatePresence>
+                      {isNetworkMenuOpen && (
+                        <motion.div
+                          initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                          className="absolute right-0 top-full mt-2.5 w-72 glass-card rounded-2xl shadow-2xl overflow-hidden z-50 p-2 text-left duration-300"
+                          style={{ fontFamily: 'Forum, "Forum", serif' }}
+                        >
+                          <p className="px-3 py-2 text-[11px] leading-relaxed text-white/55">
+                            This wallet does not support Arc Testnet. Disconnect or use another wallet.
+                          </p>
+
+                          <button
+                            onClick={() => {
+                              setIsNetworkMenuOpen(false);
+                              openChainModal();
+                            }}
+                            type="button"
+                            className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs uppercase tracking-wider text-white/70 hover:text-white hover:bg-white/5 rounded-xl transition-all mt-0.5"
+                            style={{ fontFamily: 'Forum, "Forum", serif' }}
+                          >
+                            <Wallet size={15} /> Switch Network
+                          </button>
+
+                          <button
+                            onClick={() => {
+                              onDisconnectWallet();
+                              setIsNetworkMenuOpen(false);
+                            }}
+                            className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs uppercase tracking-wider text-red-400 hover:text-red-300 hover:bg-red-500/5 rounded-xl transition-all mt-1 border-t border-white/5 pt-3"
+                            style={{ fontFamily: 'Forum, "Forum", serif' }}
+                          >
+                            <LogOut size={15} /> Disconnect Wallet
+                          </button>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
                 );
               }
 
