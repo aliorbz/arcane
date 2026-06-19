@@ -10,25 +10,15 @@ import { ChatAIView } from './components/ChatAIView';
 import { getSavedState, saveState, ROLE_CONFIGS } from './lib/mockData';
 import { ActivityLog } from './types';
 import { RITUAL_NETWORK } from './lib/config';
-import { fetchOnchainCards } from './lib/onchain';
+import { fetchOnchainCards, flagInvalidLocalCards } from './lib/onchain';
 
 export default function App() {
   const [currentView, setCurrentView] = useState<string>('home');
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [profileTab, setProfileTab] = useState<"cards" | "forge">("cards");
-
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    if (typeof window !== 'undefined') {
-      return (localStorage.getItem('arcane_theme') as 'light' | 'dark') || 'light';
-    }
-    return 'light';
-  });
-
-  const toggleTheme = () => {
-    const nextTheme = theme === 'light' ? 'dark' : 'light';
-    setTheme(nextTheme);
-    localStorage.setItem('arcane_theme', nextTheme);
-  };
+  useEffect(() => {
+    localStorage.removeItem('arcane_theme');
+  }, []);
 
   const { isConnected, address } = useAccount();
   const { disconnect } = useDisconnect();
@@ -117,11 +107,43 @@ export default function App() {
   useEffect(() => {
     async function loadOnchain() {
       const onchainCards = await fetchOnchainCards();
-      if (onchainCards.length > 0) {
+      const currentState = getSavedState();
+      const checkedLocalCards = await flagInvalidLocalCards(currentState.cards, onchainCards);
+      const localCardsChanged = checkedLocalCards.some((card, index) =>
+        card.invalidOnchain !== currentState.cards[index]?.invalidOnchain ||
+        card.localOnly !== currentState.cards[index]?.localOnly ||
+        card.isListed !== currentState.cards[index]?.isListed ||
+        card.price !== currentState.cards[index]?.price ||
+        card.listingId !== currentState.cards[index]?.listingId
+      );
+
+      if (onchainCards.length > 0 || localCardsChanged) {
         setSession(prev => {
-          const nonOverlapMocks = prev.cards.filter(mc => !onchainCards.some(oc => oc.tokenId === mc.tokenId));
+          const localByTokenId = new Map(checkedLocalCards.map(card => [card.tokenId, card]));
+          const enrichedOnchainCards = onchainCards.map(onchainCard => {
+            const localCard = localByTokenId.get(onchainCard.tokenId);
+            if (!localCard) return onchainCard;
+
+            return {
+              ...onchainCard,
+              name: localCard.name || onchainCard.name,
+              description: localCard.description || onchainCard.description,
+              imageUrl: localCard.imageUrl || onchainCard.imageUrl,
+              mediaType: localCard.mediaType || onchainCard.mediaType,
+              royaltyPercent: localCard.royaltyPercent ?? onchainCard.royaltyPercent,
+              attributes: (localCard.attributes || []).slice(0, 6),
+              creator: localCard.creator || onchainCard.creator,
+              createdAt: localCard.createdAt || onchainCard.createdAt,
+              discordId: localCard.discordId || onchainCard.discordId,
+              discordUsername: localCard.discordUsername || onchainCard.discordUsername,
+              discordRole: localCard.discordRole || onchainCard.discordRole,
+              avatar: localCard.avatar || onchainCard.avatar,
+              traits: localCard.traits || onchainCard.traits,
+            };
+          });
+          const nonOverlapMocks = checkedLocalCards.filter(mc => !onchainCards.some(oc => oc.tokenId === mc.tokenId));
           // Merge to keep simulated state and real state perfectly aligned
-          const merged = [...onchainCards, ...nonOverlapMocks];
+          const merged = [...enrichedOnchainCards, ...nonOverlapMocks];
           const updated = {
             ...prev,
             cards: merged
@@ -145,28 +167,13 @@ export default function App() {
   }, []);
 
   return (
-    <div className={`min-h-screen transition-colors duration-300 ${
-      theme === 'dark' ? 'dark bg-[#050505] text-white' : 'light bg-[#f8fafc] text-slate-900'
-    } selection:bg-purple-500/30 selection:text-white relative`}>
+    <div className="min-h-screen transition-colors duration-300 dark bg-[#050505] text-white selection:bg-purple-500/30 selection:text-white relative">
       {/* Background Ambience Accent */}
-      <div className={`fixed inset-0 pointer-events-none z-0 overflow-hidden ${
-        theme === 'dark' ? 'bg-[#030304]' : 'bg-[#f8fafc]'
-      }`}>
-        {theme === 'dark' ? (
-          <>
-            <div className="absolute top-[-10%] left-[-10%] w-[70%] h-[60%] bg-cyan-500/18 blur-[150px] rounded-full animate-pulse duration-[10s]" />
-            <div className="absolute top-[25%] right-[-5%] w-[50%] h-[50%] bg-emerald-500/12 blur-[150px] rounded-full" />
-            <div className="absolute bottom-[-10%] right-[-10%] w-[60%] h-[60%] bg-purple-600/12 blur-[160px] rounded-full" />
-            <div className="absolute bottom-[20%] left-[15%] w-[45%] h-[45%] bg-blue-600/8 blur-[130px] rounded-full" />
-          </>
-        ) : (
-          <>
-            <div className="absolute top-[-10%] left-[-10%] w-[70%] h-[60%] bg-cyan-300/25 blur-[140px] rounded-full" />
-            <div className="absolute top-[25%] right-[-5%] w-[50%] h-[50%] bg-emerald-200/20 blur-[130px] rounded-full" />
-            <div className="absolute bottom-[-10%] right-[-10%] w-[60%] h-[60%] bg-purple-300/25 blur-[150px] rounded-full" />
-            <div className="absolute bottom-[20%] left-[15%] w-[45%] h-[45%] bg-blue-200/20 blur-[120px] rounded-full" />
-          </>
-        )}
+      <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden bg-[#030304]">
+        <div className="absolute top-[-10%] left-[-10%] w-[70%] h-[60%] bg-cyan-500/18 blur-[150px] rounded-full animate-pulse duration-[10s]" />
+        <div className="absolute top-[25%] right-[-5%] w-[50%] h-[50%] bg-emerald-500/12 blur-[150px] rounded-full" />
+        <div className="absolute bottom-[-10%] right-[-10%] w-[60%] h-[60%] bg-purple-600/12 blur-[160px] rounded-full" />
+        <div className="absolute bottom-[20%] left-[15%] w-[45%] h-[45%] bg-blue-600/8 blur-[130px] rounded-full" />
       </div>
 
       {/* Styled Navbar HUD */}
@@ -185,8 +192,6 @@ export default function App() {
         discordUser={session.discordUser}
         profileTab={profileTab}
         setProfileTab={setProfileTab}
-        theme={theme}
-        toggleTheme={toggleTheme}
       />
 
       {/* Primary Dynamic Route View container */}
@@ -195,7 +200,6 @@ export default function App() {
           <HomeView
             setCurrentView={setCurrentView}
             setSelectedCardId={setSelectedCardId}
-            theme={theme}
           />
         )}
         {currentView === 'marketplace' && (
@@ -224,7 +228,7 @@ export default function App() {
           />
         )}
         {currentView === 'chat' && (
-          <ChatAIView theme={theme} />
+          <ChatAIView />
         )}
       </div>
 

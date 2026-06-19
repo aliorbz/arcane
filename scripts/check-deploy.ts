@@ -24,6 +24,8 @@ async function main() {
   }
 
   console.log("Checking ARCANE deployment bytecode");
+  const network = await ethers.provider.getNetwork();
+  console.log(`Chain ID: ${network.chainId.toString()}`);
   await checkAddress("NFT", nftAddress);
   await checkAddress("Marketplace", marketplaceAddress);
 }

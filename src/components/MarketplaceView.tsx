@@ -184,6 +184,11 @@ export function MarketplaceView({ setCurrentView, setSelectedCardId }: Marketpla
 
   // List item action
   const executeList = (card: RitualCard, priceInUSDC: number) => {
+    if (card.invalidOnchain) {
+      showNotification("This NFT does not exist onchain or has an invalid token ID.");
+      return;
+    }
+
     if (isNaN(priceInUSDC) || priceInUSDC <= 0) {
       showNotification("❌ Please enter a valid listing price greater than 0 USDC.");
       return;

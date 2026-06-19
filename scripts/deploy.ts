@@ -17,16 +17,22 @@ async function main() {
 
   const ArcaneNFT = await ethers.getContractFactory("ArcaneNFT");
   const nft = await ArcaneNFT.deploy();
+  const nftDeploymentTx = nft.deploymentTransaction();
+  console.log("NFT deployment tx:", nftDeploymentTx?.hash || "unavailable");
   await nft.waitForDeployment();
   const nftAddress = await nft.getAddress();
 
   const ArcaneMarketplace = await ethers.getContractFactory("ArcaneMarketplace");
   const marketplace = await ArcaneMarketplace.deploy(feeReceiver);
+  const marketplaceDeploymentTx = marketplace.deploymentTransaction();
+  console.log("Marketplace deployment tx:", marketplaceDeploymentTx?.hash || "unavailable");
   await marketplace.waitForDeployment();
   const marketplaceAddress = await marketplace.getAddress();
 
   console.log("");
   console.log("ARCANE deployment complete");
+  console.log("NFT deployment tx:", nftDeploymentTx?.hash || "unavailable");
+  console.log("Marketplace deployment tx:", marketplaceDeploymentTx?.hash || "unavailable");
   console.log("NFT:", nftAddress);
   console.log("Marketplace:", marketplaceAddress);
   console.log("");

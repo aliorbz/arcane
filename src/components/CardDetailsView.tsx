@@ -15,7 +15,7 @@ interface CardDetailsViewProps {
 }
 
 export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: CardDetailsViewProps) {
-  const { isConnected, chainId, chain } = useAccount();
+  const { isConnected, chainId, chain, address } = useAccount();
   const { writeContractAsync } = useWriteContract();
 
   const [state, setState] = useState(getSavedState());
@@ -113,6 +113,22 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
     const updated = { ...state, ...newState };
     setState(updated);
     saveState(updated);
+  };
+
+  const markCardInvalidOnchain = (tokenId: string) => {
+    updateLocalState({
+      cards: state.cards.map(c => {
+        if (c.tokenId !== tokenId) return c;
+        return {
+          ...c,
+          invalidOnchain: true,
+          localOnly: true,
+          isListed: false,
+          price: undefined,
+          listingId: undefined
+        };
+      })
+    });
   };
 
   const card = useMemo(() => {
@@ -574,6 +590,24 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
         throw new Error("preflight_approval_unsupported");
       }
 
+      const connectedWallet = (address || state.walletAddress) as `0x${string}`;
+      let onchainOwner = "";
+      try {
+        onchainOwner = await (publicClient as any).readContract({
+          address: CONTRACTS.NFT.address as `0x${string}`,
+          abi: CONTRACTS.NFT.abi,
+          functionName: 'ownerOf',
+          args: [BigInt(card.tokenId)],
+        }) as string;
+      } catch {
+        markCardInvalidOnchain(card.tokenId);
+        throw new Error("invalid_onchain_token_id");
+      }
+
+      if (onchainOwner.toLowerCase() !== connectedWallet.toLowerCase()) {
+        throw new Error("connected_wallet_not_token_owner");
+      }
+
       // 1. Check / Request approval if not already approved
       if (!isApproved) {
         setListingProgress("Waiting for approval tx");
@@ -587,7 +621,10 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
         } as any);
 
         setListingProgress("Approval transaction pending");
-        await (publicClient as any).waitForTransactionReceipt({ hash: approveTx });
+        const approvalReceipt = await (publicClient as any).waitForTransactionReceipt({ hash: approveTx });
+        if (approvalReceipt.status !== "success") {
+          throw new Error("Approval transaction failed onchain.");
+        }
         setListingProgress("Approval confirmed");
         showNotification("⚡ Marketplace operator approved! Preparing for Listing transaction...");
       } else {
@@ -610,7 +647,10 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
       } as any);
 
       setListingProgress("Listing transaction pending");
-      await (publicClient as any).waitForTransactionReceipt({ hash: listTx });
+      const listingReceipt = await (publicClient as any).waitForTransactionReceipt({ hash: listTx });
+      if (listingReceipt.status !== "success") {
+        throw new Error("Listing transaction failed onchain.");
+      }
 
       setListingProgress("Listed successfully");
 
@@ -628,6 +668,10 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
         }
       } catch (fErr) {
         console.warn("Could not fetch newly created listing ID:", fErr);
+      }
+
+      if (!verifiedListingId) {
+        throw new Error("Listing was not found onchain after confirmation.");
       }
 
       // Only update local state once confirmed on-chain
@@ -671,6 +715,10 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
         errorDesc = `NFT contract at ${CONTRACTS.NFT.address} is not active/deployed on chain ID ${activeChainId || "unknown"}.`;
       } else if (errorDesc === "preflight_marketplace_bytecode_missing") {
         errorDesc = `Marketplace contract at ${CONTRACTS.MARKETPLACE.address} is not active/deployed on chain ID ${activeChainId || "unknown"}.`;
+      } else if (errorDesc === "invalid_onchain_token_id") {
+        errorDesc = "This NFT does not exist onchain or has an invalid token ID.";
+      } else if (errorDesc === "connected_wallet_not_token_owner") {
+        errorDesc = "Connected wallet is not the onchain owner of this NFT.";
       } else if (errorDesc === "preflight_approval_unsupported" || errorDesc.includes("isApprovedForAll") || errorDesc.includes("0x")) {
         errorDesc = "NFT contract approval check failed. Contract address or ABI may be incorrect.";
       }

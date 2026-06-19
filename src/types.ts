@@ -17,6 +17,8 @@ export interface ArcaneNFT {
   attributes: ArcaneAttribute[];
   creator?: string;
   createdAt: string;
+  invalidOnchain?: boolean;
+  localOnly?: boolean;
 
   // Backwards compatibility properties for standard components
   discordId?: string;
