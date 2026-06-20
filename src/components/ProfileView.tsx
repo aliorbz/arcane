@@ -259,43 +259,8 @@ export function ProfileView({ setCurrentView, setSelectedCardId }: ProfileViewPr
 
   // Activity logs display
   const activityLogsDisplay = useMemo(() => {
-    const logs = state.logs || [];
-    if (!state.walletConnected || logs.length === 0) {
-      return [
-        {
-          id: "log-1",
-          tokenId: "72",
-          cardName: "Neural Fragment #72",
-          type: "buy",
-          fromAddress: "0x8920BE081c7baab78627b4eef2e7f938ba0a9a1a",
-          toAddress: "0x78FAe8da928eebffac1c5b4e8536e2fca9a1e995",
-          amount: 4.20,
-          timestamp: new Date(Date.now() - 3600000 * 2).toISOString()
-        },
-        {
-          id: "log-2",
-          tokenId: "88",
-          cardName: "Aetheric Prism #88",
-          type: "mint",
-          fromAddress: "0x0000000000000000000000000000000000000000",
-          toAddress: "0x3709CE39819fE72F6eF9d76E7196481219A995Db",
-          amount: 0.00,
-          timestamp: new Date(Date.now() - 3600000 * 24).toISOString()
-        },
-        {
-          id: "log-3",
-          tokenId: "102",
-          cardName: "Flux Sequence 102",
-          type: "list",
-          fromAddress: "0x78FAe8da928eebffac1c5b4e8536e2fca9a1e995",
-          toAddress: "0x0000000000000000000000000000000000000000",
-          amount: 0.85,
-          timestamp: new Date(Date.now() - 3600000 * 48).toISOString()
-        }
-      ];
-    }
-    return logs;
-  }, [state.logs, state.walletConnected]);
+    return state.logs || [];
+  }, [state.logs]);
 
   // Live calculation of estimated USD value
   const displayBalance = useMemo(() => {
