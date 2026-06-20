@@ -16,11 +16,7 @@ interface ChatSession {
   timestamp: string; // ISO string for sorting recency
 }
 
-interface ChatAIViewProps {
-  theme: 'light' | 'dark';
-}
-
-export function ChatAIView({ theme }: ChatAIViewProps) {
+export function ChatAIView() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);

@@ -158,84 +158,6 @@
   scrollbar-width: none;
 }
 
-/* Custom Light Mode Overrides */
-.light {
-  background-color: #f8fafc !important;
-  color: #0f172a !important;
-}
-
-.light h1, .light h2, .light h3, .light h4, .light h5, .light h6, .light strong, .light span.text-\[\#fff\] {
-  color: #0f172a !important;
-}
-
-.light .bg-\[\#030304\],
-.light .bg-\[\#050505\],
-.light .bg-\[\#060606\],
-.light .bg-\[\#050507\],
-.light .bg-black {
-  background-color: #f8fafc !important;
-}
-
-.light .bg-\[\#09090c\],
-.light .bg-\[\#0a0a0c\],
-.light .bg-\[\#0a0a0d\] {
-  backdrop-filter: blur(28px) saturate(210%) !important;
-  -webkit-backdrop-filter: blur(28px) saturate(210%) !important;
-  background-color: rgba(255, 255, 255, 0.42) !important;
-  border-color: rgba(15, 23, 42, 0.08) !important;
-  box-shadow: 0 12px 36px 0 rgba(15, 23, 42, 0.04) !important;
-}
-
-.light .bg-zinc-950,
-.light .bg-zinc-900,
-.light .bg-black\/95,
-.light .bg-\[\#060606\]\/85 {
-  background-color: rgba(255, 255, 255, 0.85) !important;
-  border-color: rgba(148, 163, 184, 0.2) !important;
-}
-
-.light .text-white {
-  color: #0f172a !important;
-}
-
-.light .text-white\/90,
-.light .text-white\/80 {
-  color: #1e293b !important;
-}
-
-.light .text-white\/70,
-.light .text-white\/60,
-.light .text-white\/50 {
-  color: #475569 !important;
-}
-
-.light .text-white\/40,
-.light .text-white\/30,
-.light .text-white\/20,
-.light .text-white\/10 {
-  color: #64748b !important;
-}
-
-.light .border-white\/5,
-.light .border-white\/10,
-.light .border-white\/\[0\.04\],
-.light .border-white\/20,
-.light .border-zinc-800,
-.light .border-zinc-900 {
-  border-color: rgba(148, 163, 184, 0.2) !important;
-}
-
-/* Scrollbars for light theme */
-.light ::-webkit-scrollbar-track {
-  background: #f1f5f9;
-}
-.light ::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-}
-.light ::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
-}
-
 /* Custom ARCANE Global Glassmorphism Cards styling */
 .glass-card,
 .bg-\[\#09090c\],
@@ -251,15 +173,3 @@
   box-shadow: 0 12px 36px 0 rgba(0, 0, 0, 0.3) !important;
 }
 
-.light .glass-card,
-.light .bg-\[\#09090c\],
-.light .bg-\[\#0a0a0c\],
-.light .bg-\[\#050507\],
-.light .bg-\[\#0f0f11\],
-.light .bg-black\/95 {
-  backdrop-filter: blur(32px) saturate(220%) !important;
-  -webkit-backdrop-filter: blur(32px) saturate(220%) !important;
-  background-color: rgba(255, 255, 255, 0.38) !important;
-  border-color: rgba(15, 23, 42, 0.08) !important;
-  box-shadow: 0 12px 36px 0 rgba(15, 23, 42, 0.03) !important;
-}

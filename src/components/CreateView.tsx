@@ -2,14 +2,36 @@ import React, { useState, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { UploadCloud, Image, Film, Music, Box, Plus, X, ShieldAlert, Sparkles, Camera, User } from 'lucide-react';
 import { useWriteContract, useAccount } from 'wagmi';
-import { parseEther } from 'viem';
+import { decodeEventLog, parseEther } from 'viem';
 import { getSavedState, saveState } from '../lib/mockData';
 import { ArcaneNFT, ArcaneAttribute, ActivityLog } from '../types';
 import { CONTRACTS } from '../lib/config';
+import { publicClient } from '../lib/onchain';
 
 interface CreateViewProps {
   setCurrentView: (view: string) => void;
   setSelectedCardId?: (id: string | null) => void;
+}
+
+const MAX_ATTRIBUTES = 6;
+
+function extractMintedTokenId(receipt: any): string | null {
+  for (const log of receipt.logs || []) {
+    if (log.address?.toLowerCase() !== CONTRACTS.NFT.address.toLowerCase()) continue;
+    try {
+      const decoded = decodeEventLog({
+        abi: CONTRACTS.NFT.abi,
+        data: log.data,
+        topics: log.topics,
+      }) as any;
+      if (decoded.eventName === 'ArtifactForged') {
+        return (decoded.args as any).tokenId.toString();
+      }
+    } catch {
+      // Ignore unrelated logs from the same transaction.
+    }
+  }
+  return null;
 }
 
 export function CreateView({ setCurrentView, setSelectedCardId }: CreateViewProps) {
@@ -72,11 +94,16 @@ export function CreateView({ setCurrentView, setSelectedCardId }: CreateViewProp
 
   // Trait action
   const handleAddAttribute = () => {
+    if (attributes.length >= MAX_ATTRIBUTES) {
+      showNotification("Maximum 6 attributes allowed.");
+      return;
+    }
+
     if (!newTraitType || !newTraitValue) {
       showNotification("⚠️ Enter both type and name for the attribute.");
       return;
     }
-    setAttributes([...attributes, { trait_type: newTraitType, value: newTraitValue }]);
+    setAttributes([...attributes, { trait_type: newTraitType, value: newTraitValue }].slice(0, MAX_ATTRIBUTES));
     setNewTraitType("");
     setNewTraitValue("");
   };
@@ -89,8 +116,8 @@ export function CreateView({ setCurrentView, setSelectedCardId }: CreateViewProp
     e.preventDefault();
     const activeState = getSavedState();
 
-    if (!activeState.walletConnected || !activeState.walletAddress) {
-      showNotification("⚠️ Please connect your Web3 wallet first!");
+    if (!isConnected || !activeState.walletConnected || !activeState.walletAddress) {
+      showNotification("Connect wallet to mint onchain.");
       return;
     }
 
@@ -113,6 +140,7 @@ export function CreateView({ setCurrentView, setSelectedCardId }: CreateViewProp
     // Create item token structure
     const nextId = (activeState.cards.length > 0 ? Math.max(...activeState.cards.map(c => parseInt(c.tokenId) || 0)) + 1 : 121).toString();
     const mappedMediaType = mediaType === "3d" ? "image" : mediaType; // Type fallback for mediaType
+    const savedAttributes = attributes.slice(0, MAX_ATTRIBUTES);
     const newNftItem: ArcaneNFT = {
       tokenId: nextId,
       owner: activeState.walletAddress,
@@ -122,7 +150,7 @@ export function CreateView({ setCurrentView, setSelectedCardId }: CreateViewProp
       imageUrl: finalImageToUse,
       mediaType: mappedMediaType as any,
       royaltyPercent: parseFloat(royaltyPercentage) || 0,
-      attributes: [...attributes],
+      attributes: savedAttributes,
       creator: activeState.walletAddress,
       createdAt: new Date().toISOString(),
       discordId: "usr_" + Date.now().toString().substring(5),
@@ -149,9 +177,27 @@ export function CreateView({ setCurrentView, setSelectedCardId }: CreateViewProp
 
         setMintStatus("⚡ Minting complete! Waiting for ledger confirmation...");
 
+        const mintReceipt = await (publicClient as any).waitForTransactionReceipt({ hash: txHash });
+        if (mintReceipt.status !== "success") {
+          throw new Error("Mint transaction failed onchain.");
+        }
+
+        const mintedTokenId = extractMintedTokenId(mintReceipt);
+        if (!mintedTokenId) {
+          showNotification("Mint succeeded but token ID could not be detected. Refresh onchain data.");
+          return;
+        }
+
+        const onchainNftItem: ArcaneNFT = {
+          ...newNftItem,
+          tokenId: mintedTokenId,
+          invalidOnchain: false,
+          localOnly: false
+        };
+
         const newLog: ActivityLog = {
           id: "log_" + Date.now(),
-          tokenId: nextId,
+          tokenId: mintedTokenId,
           type: "mint",
           fromAddress: "0x0000000000000000000000000000000000000000",
           toAddress: activeState.walletAddress,
@@ -161,7 +207,7 @@ export function CreateView({ setCurrentView, setSelectedCardId }: CreateViewProp
 
         const updatedState = {
           ...activeState,
-          cards: [newNftItem, ...activeState.cards],
+          cards: [onchainNftItem, ...activeState.cards],
           balance: parseFloat((activeState.balance - mintFee).toFixed(4)),
           logs: [newLog, ...activeState.logs]
         };
@@ -185,37 +231,6 @@ export function CreateView({ setCurrentView, setSelectedCardId }: CreateViewProp
       return;
     }
 
-    // fallback simulation
-    setTimeout(() => {
-      setMintStatus("✍🏼 Adding cryptographic cryptographic certificate signature...");
-      setTimeout(() => {
-        const newLog: ActivityLog = {
-          id: "log_" + Date.now(),
-          tokenId: nextId,
-          type: "mint",
-          fromAddress: "0x0000000000000000000000000000000000000000",
-          toAddress: activeState.walletAddress,
-          amount: mintFee,
-          timestamp: new Date().toISOString()
-        };
-
-        const updatedState = {
-          ...activeState,
-          cards: [newNftItem, ...activeState.cards],
-          balance: parseFloat((activeState.balance - mintFee).toFixed(4)),
-          logs: [newLog, ...activeState.logs]
-        };
-
-        setState(updatedState);
-        saveState(updatedState);
-        setIsMinting(false);
-        setMintStatus("");
-        showNotification(`🎉 Web3 simulation: NFT minted successfully as Token #${nextId}!`);
-        setTimeout(() => {
-          setCurrentView('profile');
-        }, 1500);
-      }, 1000);
-    }, 1200);
   };
 
   return (
@@ -446,11 +461,21 @@ export function CreateView({ setCurrentView, setSelectedCardId }: CreateViewProp
                 <button
                   type="button"
                   onClick={handleAddAttribute}
-                  className="text-[10px] font-mono text-cyan-400 uppercase tracking-widest font-black flex items-center gap-1 bg-white/[0.04] backdrop-blur-md border border-cyan-400/25 px-3 py-1.5 rounded-full hover:bg-cyan-500/10 active:scale-95 transition-all cursor-pointer"
+                  disabled={attributes.length >= MAX_ATTRIBUTES}
+                  className={`text-[10px] font-mono uppercase tracking-widest font-black flex items-center gap-1 bg-white/[0.04] backdrop-blur-md border px-3 py-1.5 rounded-full transition-all ${
+                    attributes.length >= MAX_ATTRIBUTES
+                      ? "text-white/30 border-white/10 cursor-not-allowed"
+                      : "text-cyan-400 border-cyan-400/25 hover:bg-cyan-500/10 active:scale-95 cursor-pointer"
+                  }`}
                 >
                   <Plus size={11} /> Add Property
                 </button>
               </div>
+              {attributes.length >= MAX_ATTRIBUTES && (
+                <p className="text-[10px] sm:text-xs text-cyan-300/80 font-mono uppercase tracking-widest">
+                  Maximum 6 attributes allowed.
+                </p>
+              )}
 
               {/* Trait fields */}
               <div className="grid grid-cols-2 gap-3 mb-2">

@@ -17,6 +17,8 @@ export interface ArcaneNFT {
   attributes: ArcaneAttribute[];
   creator?: string;
   createdAt: string;
+  invalidOnchain?: boolean;
+  localOnly?: boolean;
 
   // Backwards compatibility properties for standard components
   discordId?: string;
@@ -50,6 +52,7 @@ export interface ActivityLog {
   fromAddress: string;
   toAddress: string;
   amount?: number;
+  txHash?: string;
   timestamp: string;
 }
 

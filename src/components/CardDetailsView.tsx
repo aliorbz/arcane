@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ArrowLeft, ShieldCheck, Activity, Award, User, RefreshCw, Send, Check, Trash2, Tag, AlertTriangle, Play, Sparkles, Heart, Clock } from 'lucide-react';
 import { useWriteContract, useAccount } from 'wagmi';
@@ -6,7 +6,7 @@ import { parseEther } from 'viem';
 import { getSavedState, saveState } from '../lib/mockData';
 import { ArcaneNFT, CardOffer, ActivityLog } from '../types';
 import { CONTRACTS } from '../lib/config';
-import { publicClient } from '../lib/onchain';
+import { fetchOnchainCards, fetchOnchainOffers, publicClient } from '../lib/onchain';
 
 interface CardDetailsViewProps {
   cardId: string;
@@ -15,7 +15,7 @@ interface CardDetailsViewProps {
 }
 
 export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: CardDetailsViewProps) {
-  const { isConnected, chainId, chain } = useAccount();
+  const { isConnected, chainId, chain, address } = useAccount();
   const { writeContractAsync } = useWriteContract();
 
   const [state, setState] = useState(getSavedState());
@@ -36,6 +36,13 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
   const [purchaseStatus, setPurchaseStatus] = useState("");
   const [isListing, setIsListing] = useState(false);
   const [listingProgress, setListingProgress] = useState("");
+  const [onchainOffers, setOnchainOffers] = useState<CardOffer[]>([]);
+  const [isOfferActionPending, setIsOfferActionPending] = useState(false);
+  const [offerProgress, setOfferProgress] = useState("");
+  const [liveOwner, setLiveOwner] = useState<string | null>(null);
+  const [isOwnerLoading, setIsOwnerLoading] = useState(true);
+  const [ownerRefreshError, setOwnerRefreshError] = useState(false);
+  const ownerRefreshRunRef = useRef(0);
 
   const [preflightLogs, setPreflightLogs] = useState<{
     nftMintAddress: string;
@@ -88,13 +95,6 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
         isLoading: false,
       });
 
-      console.log("=== CONTRACT CONFIGURATION STATUS REPORT ===");
-      console.log(`- Mint NFT Address: ${CONTRACTS.NFT.address}`);
-      console.log(`- Listing NFT Address: ${CONTRACTS.NFT.address}`);
-      console.log(`- Marketplace Address: ${CONTRACTS.MARKETPLACE.address}`);
-      console.log(`- Chain ID: ${activeChainId || "unknown"}`);
-      console.log(`- NFT Bytecode Exists: ${nftExists ? "YES" : "NO"}`);
-      console.log(`- Marketplace Bytecode Exists: ${marketExists ? "YES" : "NO"}`);
     }
     
     checkContracts();
@@ -115,14 +115,173 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
     saveState(updated);
   };
 
+  const patchCardInLatestState = (
+    tokenId: string,
+    patch: Partial<ArcaneNFT>,
+    extraState: Partial<typeof state> = {}
+  ) => {
+    const latestState = getSavedState();
+    const updatedCards = latestState.cards.map(c =>
+      c.tokenId === tokenId ? { ...c, ...patch } : c
+    );
+    const updated = {
+      ...latestState,
+      ...extraState,
+      cards: updatedCards,
+    };
+    setState(updated);
+    saveState(updated);
+    return updated;
+  };
+
+  const markCardInvalidOnchain = (tokenId: string) => {
+    updateLocalState({
+      cards: state.cards.map(c => {
+        if (c.tokenId !== tokenId) return c;
+        return {
+          ...c,
+          invalidOnchain: true,
+          localOnly: true,
+          isListed: false,
+          price: undefined,
+          listingId: undefined
+        };
+      })
+    });
+  };
+
   const card = useMemo(() => {
     return state.cards.find(c => c.tokenId === cardId);
   }, [state.cards, cardId]);
 
+  const withOwnerTimeout = <T,>(promise: Promise<T>, label: string): Promise<T> => {
+    return Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        window.setTimeout(() => reject(new Error(`${label} timed out`)), 10000);
+      }),
+    ]);
+  };
+
+  const refreshLiveOwnership = async () => {
+    const runId = ownerRefreshRunRef.current + 1;
+    ownerRefreshRunRef.current = runId;
+
+    if (!card || !/^\d+$/.test(card.tokenId)) {
+      setLiveOwner(null);
+      setOwnerRefreshError(false);
+      setIsOwnerLoading(false);
+      return null;
+    }
+
+    setIsOwnerLoading(true);
+    setOwnerRefreshError(false);
+    try {
+      const owner = await withOwnerTimeout((publicClient as any).readContract({
+        address: CONTRACTS.NFT.address as `0x${string}`,
+        abi: CONTRACTS.NFT.abi,
+        functionName: 'ownerOf',
+        args: [BigInt(card.tokenId)],
+      }) as Promise<string>, "ownerOf");
+
+      if (ownerRefreshRunRef.current !== runId) return owner;
+
+      setLiveOwner(owner);
+      const mismatch = !!card.owner && owner.toLowerCase() !== card.owner.toLowerCase();
+      try {
+        await withOwnerTimeout((publicClient as any).readContract({
+          address: CONTRACTS.NFT.address as `0x${string}`,
+          abi: CONTRACTS.NFT.abi,
+          functionName: 'isApprovedForAll',
+          args: [owner as `0x${string}`, CONTRACTS.MARKETPLACE.address as `0x${string}`],
+        }) as Promise<boolean>, "isApprovedForAll");
+      } catch (approvalErr) {
+        console.warn("Failed to refresh marketplace approval:", approvalErr);
+      }
+
+      if (mismatch) {
+        patchCardInLatestState(card.tokenId, { owner });
+      }
+      return owner;
+    } catch (err) {
+      console.warn("Failed to refresh live NFT ownership:", err);
+      if (ownerRefreshRunRef.current !== runId) return null;
+      setLiveOwner(null);
+      setOwnerRefreshError(true);
+      return null;
+    } finally {
+      if (ownerRefreshRunRef.current === runId) {
+        setIsOwnerLoading(false);
+      }
+    }
+  };
+
   const isOwner = useMemo(() => {
-    if (!state.walletConnected || !state.walletAddress || !card) return false;
-    return card.owner.toLowerCase() === state.walletAddress.toLowerCase();
-  }, [state.walletConnected, state.walletAddress, card]);
+    if (!state.walletConnected || !state.walletAddress || !liveOwner || isOwnerLoading) return false;
+    return liveOwner.toLowerCase() === state.walletAddress.toLowerCase();
+  }, [state.walletConnected, state.walletAddress, liveOwner, isOwnerLoading]);
+
+  const ownerActionsDisabled = isOwnerLoading || ownerRefreshError || !liveOwner;
+  const displayedOwner = liveOwner || "";
+  const canShowYouOwnerLabel = !isOwnerLoading && !!liveOwner && isOwner;
+  const ownerLabel = useMemo(() => {
+    if (ownerRefreshError) return "UNKNOWN";
+    if (isOwnerLoading || !displayedOwner) return "VERIFYING";
+    if (canShowYouOwnerLabel) return "YOU";
+    return `${displayedOwner.substring(0, 6)}...${displayedOwner.substring(displayedOwner.length - 4)}`;
+  }, [ownerRefreshError, isOwnerLoading, displayedOwner, canShowYouOwnerLabel]);
+
+  const refreshOnchainOffers = async () => {
+    if (!card || !/^\d+$/.test(card.tokenId)) {
+      setOnchainOffers([]);
+      return;
+    }
+
+    const liveOffers = await fetchOnchainOffers(CONTRACTS.NFT.address as `0x${string}`, card.tokenId);
+    setOnchainOffers(liveOffers);
+  };
+
+  const refreshCardFromOnchain = async () => {
+    if (!card) return undefined;
+
+    const refreshedOnchainCards = await fetchOnchainCards();
+    const refreshedCard = refreshedOnchainCards.find(c => c.tokenId === card.tokenId);
+    if (!refreshedCard) return undefined;
+
+    patchCardInLatestState(card.tokenId, {
+      owner: refreshedCard.owner,
+      isListed: refreshedCard.isListed,
+      price: refreshedCard.isListed ? refreshedCard.price : undefined,
+      listingId: refreshedCard.isListed ? refreshedCard.listingId : undefined,
+    });
+
+    return refreshedCard;
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadOffers() {
+      if (!card || !/^\d+$/.test(card.tokenId)) {
+        if (!cancelled) setOnchainOffers([]);
+        return;
+      }
+
+      const liveOffers = await fetchOnchainOffers(CONTRACTS.NFT.address as `0x${string}`, card.tokenId);
+      if (!cancelled) setOnchainOffers(liveOffers);
+    }
+
+    loadOffers();
+    const interval = setInterval(loadOffers, 8000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [card?.tokenId]);
+
+  useEffect(() => {
+    refreshLiveOwnership();
+  }, [card?.tokenId, state.walletAddress, state.walletConnected]);
 
   const creatorAddressFormatted = useMemo(() => {
     if (!card) return "0x0000...0000";
@@ -135,8 +294,23 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
 
   // Active offers on this specific token card
   const cardOffers = useMemo(() => {
-    return state.offers.filter(o => o.tokenId === cardId && o.active);
-  }, [state.offers, cardId]);
+    return onchainOffers.filter(o => o.tokenId === cardId && o.active);
+  }, [onchainOffers, cardId]);
+
+  const activeUserOffer = useMemo(() => {
+    if (!state.walletConnected || !state.walletAddress) return null;
+    return cardOffers.find(o => o.offerer.toLowerCase() === state.walletAddress.toLowerCase()) || null;
+  }, [cardOffers, state.walletConnected, state.walletAddress]);
+
+  const hasActiveUserOffer = !!activeUserOffer;
+
+  const overListPriceOfferWarning = useMemo(() => {
+    if (!card?.isListed || card.price === undefined || !bidPrice.trim()) return null;
+    const offerAmount = parseFloat(bidPrice);
+    if (isNaN(offerAmount) || offerAmount < card.price) return null;
+    const listedPrice = `${card.price.toFixed(4)} USDC`;
+    return `This NFT is listed for ${listedPrice}. Your offer can not be equal or higher than ${listedPrice}.`;
+  }, [card?.isListed, card?.price, bidPrice]);
 
   const highestOffer = useMemo(() => {
     if (cardOffers.length === 0) return null;
@@ -154,6 +328,12 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
 
   // Execute Transfer Card
   const handleTransfer = () => {
+    if (ownerActionsDisabled || !isOwner) {
+      showNotification("This NFT ownership changed onchain. Refreshing...");
+      refreshLiveOwnership();
+      return;
+    }
+
     if (!transferAddress.startsWith("0x") || transferAddress.length < 10) {
       showNotification("❌ Please enter a valid Hex wallet address starting with 0x...");
       return;
@@ -194,114 +374,167 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
     });
 
     showNotification(`✈️ Successfully transferred NFT #${card.tokenId} to recipient address.`);
+    refreshLiveOwnership();
     setTransferAddress("");
     setSelectedCardId(null);
     setCurrentView('profile');
   };
 
-  // Reject Offer or Cancel Offer
-  const handleCancelOffer = (offerId: string) => {
-    const offerToCancel = state.offers.find(o => o.offerId === offerId);
-    if (!offerToCancel) return;
-
-    const isOfferer = state.walletConnected && state.walletAddress.toLowerCase() === offerToCancel.offerer.toLowerCase();
-
-    // Give funds back if canceled by offerer
-    let refundAmount = 0;
-    if (isOfferer) {
-      refundAmount = offerToCancel.amount;
+  // Cancel active onchain offer
+  const handleCancelOffer = async (offer: CardOffer) => {
+    if (!state.walletConnected || !state.walletAddress || !card) {
+      showNotification("Please connect your Web3 wallet first.");
+      return;
     }
 
-    const updatedOffers = state.offers.map(o => {
-      if (o.offerId === offerId) {
-        return { ...o, active: false };
+    if (!/^\d+$/.test(card.tokenId)) {
+      showNotification("Missing or invalid token ID. Offer action blocked.");
+      return;
+    }
+
+    if (offer.offerer.toLowerCase() !== state.walletAddress.toLowerCase()) {
+      showNotification("Only the offer maker can cancel this onchain offer.");
+      return;
+    }
+
+    setIsOfferActionPending(true);
+    setOfferProgress("Waiting for cancel offer signature");
+
+    try {
+      const txHash = await writeContractAsync({
+        address: CONTRACTS.MARKETPLACE.address as `0x${string}`,
+        abi: CONTRACTS.MARKETPLACE.abi,
+        functionName: 'cancelOffer',
+        args: [CONTRACTS.NFT.address as `0x${string}`, BigInt(card.tokenId)],
+      } as any);
+
+      setOfferProgress("Cancel offer transaction pending");
+      const receipt = await (publicClient as any).waitForTransactionReceipt({ hash: txHash });
+      if (receipt.status !== "success") {
+        throw new Error("Cancel offer transaction failed onchain.");
       }
-      return o;
-    });
 
-    const newLog: ActivityLog = {
-      id: "log_" + Date.now(),
-      tokenId: cardId,
-      type: "cancel_offer",
-      fromAddress: offerToCancel.offerer,
-      toAddress: card ? card.owner : "0x0000000000000000000000000000000000000000",
-      amount: offerToCancel.amount,
-      timestamp: new Date().toISOString()
-    };
+      await refreshOnchainOffers();
+      const newLog: ActivityLog = {
+        id: "log_" + Date.now(),
+        tokenId: card.tokenId,
+        type: "cancel_offer",
+        fromAddress: offer.offerer,
+        toAddress: displayedOwner || card.owner,
+        amount: offer.amount,
+        txHash,
+        timestamp: new Date().toISOString()
+      };
 
-    const updatedState = {
-      ...state,
-      offers: updatedOffers,
-      balance: parseFloat((state.balance + refundAmount).toFixed(4)),
-      logs: [newLog, ...state.logs]
-    };
-
-    updateLocalState(updatedState);
-    showNotification(isOfferer ? "🤝 Escrow bid offer withdrawn! Tokens refunded to balance." : "❌ Offer rejected successfully.");
+      updateLocalState({
+        ...state,
+        logs: [newLog, ...state.logs]
+      });
+      showNotification("Offer canceled onchain.");
+    } catch (err: any) {
+      console.error("Cancel offer failed:", err);
+      showNotification(`Transaction declined or failed: ${err.message || err}`);
+    } finally {
+      setIsOfferActionPending(false);
+      setOfferProgress("");
+    }
   };
 
-  // Accept Offer (Owner Action)
-  const handleAcceptOffer = (offer: CardOffer) => {
-    if (!card) return;
+  // Accept onchain offer (Owner Action)
+  const handleAcceptOffer = async (offer: CardOffer) => {
+    if (!state.walletConnected || !state.walletAddress || !card) {
+      showNotification("Please connect your Web3 wallet first.");
+      return;
+    }
 
-    const buyer = offer.offerer;
-    const seller = card.owner;
-    const payment = offer.amount;
+    if (!/^\d+$/.test(card.tokenId)) {
+      showNotification("Missing or invalid token ID. Offer action blocked.");
+      return;
+    }
 
-    // Ownership Transmutation
-    const updatedCards = state.cards.map(c => {
-      if (c.tokenId === card.tokenId) {
-        return {
-          ...c,
-          owner: buyer,
+    const currentOwner = await refreshLiveOwnership();
+    if (!currentOwner || currentOwner.toLowerCase() !== state.walletAddress.toLowerCase()) {
+      showNotification("Only the NFT owner can accept this onchain offer.");
+      return;
+    }
+
+    setIsOfferActionPending(true);
+    setOfferProgress("Checking marketplace approval");
+
+    try {
+      const isApproved = await (publicClient as any).readContract({
+        address: CONTRACTS.NFT.address as `0x${string}`,
+        abi: CONTRACTS.NFT.abi,
+        functionName: 'isApprovedForAll',
+        args: [state.walletAddress as `0x${string}`, CONTRACTS.MARKETPLACE.address as `0x${string}`],
+      }) as boolean;
+
+      if (!isApproved) {
+        setOfferProgress("Waiting for marketplace approval signature");
+        const approveTx = await writeContractAsync({
+          address: CONTRACTS.NFT.address as `0x${string}`,
+          abi: CONTRACTS.NFT.abi,
+          functionName: 'setApprovalForAll',
+          args: [CONTRACTS.MARKETPLACE.address as `0x${string}`, true],
+        } as any);
+
+        setOfferProgress("Approval transaction pending");
+        const approvalReceipt = await (publicClient as any).waitForTransactionReceipt({ hash: approveTx });
+        if (approvalReceipt.status !== "success") {
+          throw new Error("Marketplace approval failed onchain.");
+        }
+      }
+
+      setOfferProgress("Waiting for accept offer signature");
+      const txHash = await writeContractAsync({
+        address: CONTRACTS.MARKETPLACE.address as `0x${string}`,
+        abi: CONTRACTS.MARKETPLACE.abi,
+        functionName: 'acceptOffer',
+        args: [CONTRACTS.NFT.address as `0x${string}`, BigInt(card.tokenId), offer.offerer as `0x${string}`],
+      } as any);
+
+      setOfferProgress("Accept offer transaction pending");
+      const receipt = await (publicClient as any).waitForTransactionReceipt({ hash: txHash });
+      if (receipt.status !== "success") {
+        throw new Error("Accept offer transaction failed onchain.");
+      }
+
+      const refreshedCard = await refreshCardFromOnchain();
+      if (!refreshedCard || !refreshedCard.isListed) {
+        patchCardInLatestState(card.tokenId, {
+          owner: offer.offerer,
           isListed: false,
-          price: undefined
-        };
+          price: undefined,
+          listingId: undefined,
+        });
       }
-      return c;
-    });
+      await refreshLiveOwnership();
+      await refreshOnchainOffers();
 
-    // Close offer
-    const updatedOffers = state.offers.map(o => {
-      if (o.offerId === offer.offerId) {
-        return { ...o, active: false };
-      }
-      return o;
-    });
+      const savedState = getSavedState();
+      const newLog: ActivityLog = {
+        id: "log_" + Date.now(),
+        tokenId: card.tokenId,
+        type: "buy",
+        fromAddress: currentOwner,
+        toAddress: offer.offerer,
+        amount: offer.amount,
+        txHash,
+        timestamp: new Date().toISOString()
+      };
 
-    const newLog: ActivityLog = {
-      id: "log_" + Date.now(),
-      tokenId: card.tokenId,
-      type: "buy",
-      fromAddress: seller,
-      toAddress: buyer,
-      amount: payment,
-      timestamp: new Date().toISOString()
-    };
-
-    let payout = 0;
-    const isUserSeller = seller.toLowerCase() === state.walletAddress?.toLowerCase();
-    const isUserCreator = (card.creator || "0xBE0848a9315da2ffbc28a9ea56b0d4b42413c8be").toLowerCase() === state.walletAddress?.toLowerCase();
-
-    if (isUserSeller) {
-      payout += payment * 0.95;
+      updateLocalState({
+        ...savedState,
+        logs: [newLog, ...savedState.logs]
+      });
+      showNotification("Offer accepted onchain. Ownership refreshed from contract.");
+    } catch (err: any) {
+      console.error("Accept offer failed:", err);
+      showNotification(`Transaction declined or failed: ${err.message || err}`);
+    } finally {
+      setIsOfferActionPending(false);
+      setOfferProgress("");
     }
-    if (isUserCreator) {
-      payout += payment * 0.025;
-    }
-
-    const updatedState = {
-      ...state,
-      cards: updatedCards,
-      offers: updatedOffers,
-      balance: parseFloat((state.balance + payout).toFixed(4)), 
-      logs: [newLog, ...state.logs]
-    };
-
-    updateLocalState(updatedState);
-    showNotification(`🎉 Bid of ${payment} USDC accepted! Ownership transferred.`);
-    setSelectedCardId(null);
-    setCurrentView('profile');
   };
 
   // Buy listed card
@@ -316,7 +549,12 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
       return;
     }
 
-    const price = card.price || 0.85;
+    if (!card.listingId) {
+      showNotification("No active listing found.");
+      return;
+    }
+
+    const price = card.price || 0;
     if (state.balance < price) {
       showNotification("❌ Insufficient balance to purchase this NFT!");
       return;
@@ -325,31 +563,40 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
     setIsPurchasing(true);
     setPurchaseStatus("📜 Awaiting core transaction signature approval in your wallet...");
 
-    const seller = card.owner;
+    const seller = displayedOwner || card.owner;
     const buyer = state.walletAddress;
+    let txHash: `0x${string}` | undefined;
+    let refreshedCard: ArcaneNFT | undefined;
 
     try {
       if (isConnected) {
         // Real onchain purchase contract call
-        await writeContractAsync({
+        txHash = await writeContractAsync({
           address: CONTRACTS.MARKETPLACE.address,
           abi: CONTRACTS.MARKETPLACE.abi,
-          // Since mock on-chain lists are stored, assumes buyItem(tokenId) or buyItem(listingId)
           functionName: "buyItem",
-          args: [BigInt(card.tokenId)],
+          args: [BigInt(card.listingId)],
           value: parseEther(price.toString()),
         } as any);
         setPurchaseStatus("⏳ Transaction sent. Waiting for blockchain execution confirmation...");
-        await new Promise(resolve => setTimeout(resolve, 2500));
+        const buyReceipt = await (publicClient as any).waitForTransactionReceipt({ hash: txHash });
+        if (buyReceipt.status !== "success") {
+          throw new Error("Buy transaction failed onchain.");
+        }
+        const refreshedOnchainCards = await fetchOnchainCards();
+        refreshedCard = refreshedOnchainCards.find(c => c.tokenId === card.tokenId);
       }
 
-      const updatedCards = state.cards.map(c => {
+      const latestState = getSavedState();
+      const updatedCards = latestState.cards.map(c => {
         if (c.tokenId === card.tokenId) {
+          const isStillListed = refreshedCard?.isListed === true;
           return {
             ...c,
-            owner: buyer,
-            isListed: false,
-            price: undefined
+            owner: refreshedCard?.owner || buyer,
+            isListed: isStillListed,
+            price: isStillListed ? refreshedCard?.price : undefined,
+            listingId: isStillListed ? refreshedCard?.listingId : undefined
           };
         }
         return c;
@@ -362,23 +609,19 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
         fromAddress: seller,
         toAddress: buyer,
         amount: price,
+        txHash,
         timestamp: new Date().toISOString()
       };
 
-      let balanceChange = -price;
-      const isUserCreator = (card.creator || "0xBE0848a9315da2ffbc28a9ea56b0d4b42413c8be").toLowerCase() === state.walletAddress?.toLowerCase();
-      if (isUserCreator) {
-        balanceChange += price * 0.025;
-      }
-
       const updatedState = {
-        ...state,
+        ...latestState,
         cards: updatedCards,
-        balance: parseFloat((state.balance + balanceChange).toFixed(4)),
-        logs: [newLog, ...state.logs]
+        logs: [newLog, ...latestState.logs]
       };
 
       updateLocalState(updatedState);
+      await refreshLiveOwnership();
+      setState(getSavedState());
       showNotification(`🎉 Asset purchased! "${card.name}" has been transferred to your vault.`);
       setSelectedCardId(null);
       setCurrentView('profile');
@@ -391,95 +634,80 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
     }
   };
 
-  // Submit Bidding or Buy Offer
-  const handleSubmitBidOffer = (e: React.FormEvent) => {
+  // Submit or edit onchain offer
+  const handleSubmitBidOffer = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!state.walletConnected || !state.walletAddress || !card) {
-      showNotification("⚠️ Please connect your Web3 wallet first!");
+      showNotification("Please connect your Web3 wallet first.");
       return;
     }
 
-    if (card.owner.toLowerCase() === state.walletAddress.toLowerCase()) {
-      showNotification("❌ You cannot make an escrow offer on an NFT you own.");
+    if (isOwnerLoading || !liveOwner) {
+      showNotification("This NFT ownership changed onchain. Refreshing...");
+      await refreshLiveOwnership();
+      return;
+    }
+
+    if (liveOwner && liveOwner.toLowerCase() === state.walletAddress.toLowerCase()) {
+      showNotification("You cannot make an escrow offer on an NFT you own.");
+      return;
+    }
+
+    if (!/^\d+$/.test(card.tokenId)) {
+      showNotification("Missing or invalid token ID. Offer action blocked.");
       return;
     }
 
     const offerVal = parseFloat(bidPrice);
     if (isNaN(offerVal) || offerVal <= 0) {
-      showNotification("❌ Enter a valid offer amount greater than 0 USDC.");
+      showNotification("Enter a valid offer amount greater than 0 USDC.");
       return;
     }
 
-    // Check if user already has an active offer for this token
-    const existingOfferIndex = state.offers.findIndex(
-      o => o.tokenId === card.tokenId && o.active && o.offerer.toLowerCase() === state.walletAddress.toLowerCase()
-    );
+    const userHadActiveOffer = !!activeUserOffer;
+    setIsOfferActionPending(true);
+    setOfferProgress("Waiting for offer signature");
 
-    let updatedOffers = [...state.offers];
-    let balanceAdjustment = 0;
+    try {
+      const txHash = await writeContractAsync({
+        address: CONTRACTS.MARKETPLACE.address as `0x${string}`,
+        abi: CONTRACTS.MARKETPLACE.abi,
+        functionName: 'makeOffer',
+        args: [CONTRACTS.NFT.address as `0x${string}`, BigInt(card.tokenId)],
+        value: parseEther(offerVal.toString()),
+      } as any);
 
-    if (existingOfferIndex >= 0) {
-      // Modify active offer
-      const prevOffer = state.offers[existingOfferIndex];
-      const diff = offerVal - prevOffer.amount;
-      if (state.balance < diff) {
-        showNotification("❌ Insufficient funds to increase this offer's escrow amount.");
-        return;
+      setOfferProgress("Offer transaction pending");
+      const receipt = await (publicClient as any).waitForTransactionReceipt({ hash: txHash });
+      if (receipt.status !== "success") {
+        throw new Error("Offer transaction failed onchain.");
       }
-      
-      const updatedOffer: CardOffer = {
-        ...prevOffer,
-        amount: offerVal,
-        createdAt: new Date().toISOString()
-      };
-      
-      updatedOffers[existingOfferIndex] = updatedOffer;
-      balanceAdjustment = -diff; // balance decreases by the difference
-    } else {
-      // Create fresh new offer
-      if (state.balance < offerVal) {
-        showNotification("❌ Insufficient funds to lock for this offer.");
-        return;
-      }
-      
-      const newOffer: CardOffer = {
-        offerId: "offer_" + Date.now(),
+
+      await refreshOnchainOffers();
+      const newLog: ActivityLog = {
+        id: "log_" + Date.now(),
         tokenId: card.tokenId,
-        offerer: state.walletAddress,
-        offererName: state.discordUser ? state.discordUser.name : "Anonymous Collector",
+        type: 'offer',
+        fromAddress: state.walletAddress,
+        toAddress: displayedOwner || card.owner,
         amount: offerVal,
-        active: true,
-        createdAt: new Date().toISOString()
+        txHash,
+        timestamp: new Date().toISOString()
       };
-      
-      updatedOffers = [newOffer, ...updatedOffers];
-      balanceAdjustment = -offerVal;
+
+      updateLocalState({
+        ...state,
+        logs: [newLog, ...state.logs]
+      });
+      setBidPrice("");
+      showNotification(userHadActiveOffer ? "Offer updated onchain." : "Offer submitted onchain.");
+    } catch (err: any) {
+      console.error("Offer failed:", err);
+      showNotification(`Transaction declined or failed: ${err.message || err}`);
+    } finally {
+      setIsOfferActionPending(false);
+      setOfferProgress("");
     }
-
-    const newLog: ActivityLog = {
-      id: "log_" + Date.now(),
-      tokenId: card.tokenId,
-      type: 'offer',
-      fromAddress: state.walletAddress,
-      toAddress: card.owner,
-      amount: offerVal,
-      timestamp: new Date().toISOString()
-    };
-
-    const updatedState = {
-      ...state,
-      offers: updatedOffers,
-      balance: parseFloat((state.balance + balanceAdjustment).toFixed(4)),
-      logs: [newLog, ...state.logs]
-    };
-
-    updateLocalState(updatedState);
-    setBidPrice("");
-    showNotification(
-      existingOfferIndex >= 0 
-        ? `🎉 Offer updated! Active escrow balance is now adjusted to ${offerVal} USDC.`
-        : `🤝 Buying offer of ${offerVal} USDC submitted successfully in contract escrow!`
-    );
   };
 
   // Create Listing
@@ -498,6 +726,12 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
       return;
     }
 
+    if (ownerActionsDisabled || !isOwner) {
+      showNotification("This NFT ownership changed onchain. Refreshing...");
+      await refreshLiveOwnership();
+      return;
+    }
+
     setIsListing(true);
     setListingProgress("Running preflight checks");
 
@@ -506,14 +740,6 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
     const expectedChainId = 5042002;
 
     try {
-      // Preflight checks and technical logging
-      console.log("=== ARCANE MARKETPLACE LISTING PREFLIGHT LOGS ===");
-      console.log(`- Connected Chain ID: ${activeChainId || "unknown"}`);
-      console.log(`- NFT Contract Address: ${CONTRACTS.NFT.address}`);
-      console.log(`- Marketplace Contract Address: ${CONTRACTS.MARKETPLACE.address}`);
-      console.log(`- Listing Token ID: ${card.tokenId}`);
-      console.log(`- Token Owner Address: ${state.walletAddress}`);
-
       if (activeChainId !== expectedChainId) {
         const errorMsg = `❌ Wrong Network! You are connected to Chain ID ${activeChainId || 'unknown'}, but Arc Testnet (${expectedChainId}) is required. Please switch networks in your wallet.`;
         showNotification(errorMsg);
@@ -531,8 +757,6 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
       } catch (err) {
         console.warn("Could not query NFT bytecode:", err);
       }
-      console.log(`- NFT Bytecode Exists: ${nftBytecode && nftBytecode !== "0x" ? "YES" : "NO"}`);
-
       let marketplaceBytecode = "";
       try {
         marketplaceBytecode = await (publicClient as any).getBytecode({
@@ -541,8 +765,6 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
       } catch (err) {
         console.warn("Could not query Marketplace bytecode:", err);
       }
-      console.log(`- Marketplace Bytecode Exists: ${marketplaceBytecode && marketplaceBytecode !== "0x" ? "YES" : "NO"}`);
-
       if (!nftBytecode || nftBytecode === "0x") {
         throw new Error("preflight_nft_bytecode_missing");
       }
@@ -567,11 +789,26 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
         console.error("NFT isApprovedForAll call failed/unsupported:", checkErr.message || checkErr);
       }
 
-      console.log(`- NFT Approval Function Available: ${approvalFuncSupported ? "YES" : "NO"}`);
-      console.log(`- Marketplace Approved Already: ${isApproved ? "YES" : "NO"}`);
-
       if (!approvalFuncSupported) {
         throw new Error("preflight_approval_unsupported");
+      }
+
+      const connectedWallet = (address || state.walletAddress) as `0x${string}`;
+      let onchainOwner = "";
+      try {
+        onchainOwner = await (publicClient as any).readContract({
+          address: CONTRACTS.NFT.address as `0x${string}`,
+          abi: CONTRACTS.NFT.abi,
+          functionName: 'ownerOf',
+          args: [BigInt(card.tokenId)],
+        }) as string;
+      } catch {
+        markCardInvalidOnchain(card.tokenId);
+        throw new Error("invalid_onchain_token_id");
+      }
+
+      if (onchainOwner.toLowerCase() !== connectedWallet.toLowerCase()) {
+        throw new Error("connected_wallet_not_token_owner");
       }
 
       // 1. Check / Request approval if not already approved
@@ -587,7 +824,10 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
         } as any);
 
         setListingProgress("Approval transaction pending");
-        await (publicClient as any).waitForTransactionReceipt({ hash: approveTx });
+        const approvalReceipt = await (publicClient as any).waitForTransactionReceipt({ hash: approveTx });
+        if (approvalReceipt.status !== "success") {
+          throw new Error("Approval transaction failed onchain.");
+        }
         setListingProgress("Approval confirmed");
         showNotification("⚡ Marketplace operator approved! Preparing for Listing transaction...");
       } else {
@@ -610,7 +850,10 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
       } as any);
 
       setListingProgress("Listing transaction pending");
-      await (publicClient as any).waitForTransactionReceipt({ hash: listTx });
+      const listingReceipt = await (publicClient as any).waitForTransactionReceipt({ hash: listTx });
+      if (listingReceipt.status !== "success") {
+        throw new Error("Listing transaction failed onchain.");
+      }
 
       setListingProgress("Listed successfully");
 
@@ -628,6 +871,10 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
         }
       } catch (fErr) {
         console.warn("Could not fetch newly created listing ID:", fErr);
+      }
+
+      if (!verifiedListingId) {
+        throw new Error("Listing was not found onchain after confirmation.");
       }
 
       // Only update local state once confirmed on-chain
@@ -671,6 +918,10 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
         errorDesc = `NFT contract at ${CONTRACTS.NFT.address} is not active/deployed on chain ID ${activeChainId || "unknown"}.`;
       } else if (errorDesc === "preflight_marketplace_bytecode_missing") {
         errorDesc = `Marketplace contract at ${CONTRACTS.MARKETPLACE.address} is not active/deployed on chain ID ${activeChainId || "unknown"}.`;
+      } else if (errorDesc === "invalid_onchain_token_id") {
+        errorDesc = "This NFT does not exist onchain or has an invalid token ID.";
+      } else if (errorDesc === "connected_wallet_not_token_owner") {
+        errorDesc = "Connected wallet is not the onchain owner of this NFT.";
       } else if (errorDesc === "preflight_approval_unsupported" || errorDesc.includes("isApprovedForAll") || errorDesc.includes("0x")) {
         errorDesc = "NFT contract approval check failed. Contract address or ABI may be incorrect.";
       }
@@ -685,6 +936,12 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
   // Cancel Listing
   const handleDelistListing = async () => {
     if (!card) return;
+
+    if (ownerActionsDisabled || !isOwner) {
+      showNotification("This NFT ownership changed onchain. Refreshing...");
+      await refreshLiveOwnership();
+      return;
+    }
 
     if (isConnected && state.walletAddress && card.listingId) {
       setIsListing(true);
@@ -893,7 +1150,7 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
                 <span className="text-white/20 select-none">•</span>
                 <div className="flex items-center gap-1">
                   <span className="text-white/40">Owner:</span>
-                  <span className="text-cyan-400">{isOwner ? "YOU" : `${card.owner.substring(0, 6)}...${card.owner.substring(card.owner.length - 4)}`}</span>
+                  <span className="text-cyan-400">{ownerLabel}</span>
                 </div>
                 <span className="text-white/20 select-none">•</span>
                 <div className="flex items-center gap-1 select-none">
@@ -917,6 +1174,24 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
                 <p className="text-[11px] text-white/40 mt-0.5 font-medium">This asset is fully audited and certified with genuine, immutable blockchain ownership.</p>
               </div>
             </div>
+
+            {isOwnerLoading && (
+              <div className="bg-cyan-950/20 border border-cyan-400/20 rounded-2xl px-5 py-3 text-xs text-cyan-300 font-mono font-bold uppercase tracking-wider">
+                This NFT ownership changed onchain. Refreshing...
+              </div>
+            )}
+
+            {ownerRefreshError && (
+              <div className="bg-red-950/20 border border-red-500/20 rounded-2xl px-5 py-3 text-xs text-red-300 font-mono font-bold uppercase tracking-wider flex items-center justify-between gap-3">
+                <span>Owner could not be verified onchain.</span>
+                <button
+                  onClick={() => refreshLiveOwnership()}
+                  className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white text-[10px] uppercase tracking-wider border border-white/10"
+                >
+                  Retry refresh
+                </button>
+              </div>
+            )}
 
             {/* Description Paragraph */}
             <div className="border-t border-white/5 pt-5">
@@ -967,8 +1242,8 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
                         </div>
                         <button
                           onClick={handleDelistListing}
-                          disabled={isListing}
-                          className={`px-5 py-3 rounded-xl bg-red-950/20 border border-red-500/20 hover:bg-red-900/30 text-red-400 text-xs font-mono font-bold uppercase transition-all cursor-pointer ${isListing ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          disabled={isListing || ownerActionsDisabled}
+                          className={`px-5 py-3 rounded-xl bg-red-950/20 border border-red-500/20 hover:bg-red-900/30 text-red-400 text-xs font-mono font-bold uppercase transition-all cursor-pointer ${(isListing || ownerActionsDisabled) ? 'opacity-50 cursor-not-allowed' : ''}`}
                         >
                           Delist NFT
                         </button>
@@ -985,15 +1260,15 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
                                 placeholder="0.00"
                                 value={listPrice}
                                 onChange={(e) => setListPrice(e.target.value)}
-                                disabled={isListing}
+                                disabled={isListing || ownerActionsDisabled}
                                 className="w-full bg-[#040404] border border-white/5 rounded-xl px-4 py-3.5 text-white font-bold font-mono text-xs focus:outline-none focus:border-cyan-400/30 disabled:opacity-50 disabled:cursor-not-allowed"
                               />
                               <span className="absolute right-4 top-1/2 -translate-y-1/2 text-white/30 font-bold text-[9px] font-mono">USDC</span>
                             </div>
                             <button
                               type="submit"
-                              disabled={isListing}
-                              className={`px-5 py-3.5 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-black font-black text-xs uppercase cursor-pointer shrink-0 ${isListing ? 'opacity-50 cursor-not-allowed' : ''}`}
+                              disabled={isListing || ownerActionsDisabled}
+                              className={`px-5 py-3.5 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-black font-black text-xs uppercase cursor-pointer shrink-0 ${(isListing || ownerActionsDisabled) ? 'opacity-50 cursor-not-allowed' : ''}`}
                             >
                               List NFT
                             </button>
@@ -1001,8 +1276,8 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
                         ) : (
                           <button
                             onClick={() => setShowListInput(true)}
-                            disabled={isListing}
-                            className={`w-full py-4 rounded-xl bg-white/5 border border-white/10 hover:border-white/15 text-white text-xs font-mono font-bold uppercase tracking-widest cursor-pointer flex items-center justify-center gap-1.5 transition-colors ${isListing ? 'opacity-50 cursor-not-allowed' : ''}`}
+                            disabled={isListing || ownerActionsDisabled}
+                            className={`w-full py-4 rounded-xl bg-white/5 border border-white/10 hover:border-white/15 text-white text-xs font-mono font-bold uppercase tracking-widest cursor-pointer flex items-center justify-center gap-1.5 transition-colors ${(isListing || ownerActionsDisabled) ? 'opacity-50 cursor-not-allowed' : ''}`}
                           >
                             <Tag size={13} /> List NFT
                           </button>
@@ -1070,11 +1345,13 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
                         placeholder="Recipient Hex Address (0x...)"
                         value={transferAddress}
                         onChange={(e) => setTransferAddress(e.target.value)}
-                        className="w-full bg-[#040404] border border-white/5 rounded-xl px-4 py-3 text-white font-mono text-xs focus:outline-none focus:border-cyan-400/20"
+                        disabled={ownerActionsDisabled}
+                        className="w-full bg-[#040404] border border-white/5 rounded-xl px-4 py-3 text-white font-mono text-xs focus:outline-none focus:border-cyan-400/20 disabled:opacity-50 disabled:cursor-not-allowed"
                       />
                       <button
                         onClick={handleTransfer}
-                        className="px-5 py-3 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-black font-black text-xs font-mono uppercase shrink-0 cursor-pointer flex items-center gap-1.5"
+                        disabled={ownerActionsDisabled}
+                        className="px-5 py-3 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-black font-black text-xs font-mono uppercase shrink-0 cursor-pointer flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <Send size={12} /> Transfer
                       </button>
@@ -1127,10 +1404,16 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
                   {/* Escrow Offering form */}
                   <div className="border-t border-white/[0.04] pt-5.5">
                     <h3 className="text-[10px] font-mono uppercase tracking-widest text-[#94a3b8] font-bold mb-3.5">
-                      {state.offers.some(o => o.tokenId === card.tokenId && o.active && o.offerer.toLowerCase() === state.walletAddress?.toLowerCase())
+                      {hasActiveUserOffer
                         ? "Modify your active escrow offer"
                         : "Submit an escrow offer"}
                     </h3>
+                    {activeUserOffer && (
+                      <div className="mb-3 text-[10px] font-mono text-white/45 uppercase tracking-wider">
+                        <span className="text-cyan-400 font-black">{activeUserOffer.amount.toFixed(4)} USDC</span>
+                        <span className="block mt-1 normal-case tracking-normal text-white/35">Updating will replace your previous offer.</span>
+                      </div>
+                    )}
                     <form onSubmit={handleSubmitBidOffer} className="flex gap-2.5">
                       <div className="relative flex-grow">
                         <input
@@ -1140,19 +1423,32 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
                           placeholder="Place your offer price (USDC)..."
                           value={bidPrice}
                           onChange={(e) => setBidPrice(e.target.value)}
-                          className="w-full bg-[#040404] border border-white/5 rounded-xl px-4 py-3.5 text-white font-bold font-mono text-xs focus:outline-none focus:border-cyan-400/30"
+                          disabled={isOfferActionPending}
+                          className="w-full bg-[#040404] border border-white/5 rounded-xl px-4 py-3.5 text-white font-bold font-mono text-xs focus:outline-none focus:border-cyan-400/30 disabled:opacity-50 disabled:cursor-not-allowed"
                         />
                         <span className="absolute right-4 top-1/2 -translate-y-1/2 text-white/30 font-black text-[9px] font-mono uppercase">USDC</span>
                       </div>
                       <button
                         type="submit"
-                        className="px-6 py-3.5 rounded-xl bg-white hover:bg-zinc-100 text-black font-black text-xs font-mono uppercase shrink-0 cursor-pointer flex items-center gap-1.5 shadow"
+                        disabled={isOfferActionPending}
+                        className="px-6 py-3.5 rounded-xl bg-white hover:bg-zinc-100 text-black font-black text-xs font-mono uppercase shrink-0 cursor-pointer flex items-center gap-1.5 shadow disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        {state.offers.some(o => o.tokenId === card.tokenId && o.active && o.offerer.toLowerCase() === state.walletAddress?.toLowerCase())
-                          ? "Change Offer"
+                        {hasActiveUserOffer
+                          ? "Update Offer"
                           : "Make Offer"}
                       </button>
                     </form>
+                    {overListPriceOfferWarning && (
+                      <div className="mt-3 text-[10px] font-mono text-amber-300/80 uppercase tracking-wider">
+                        {overListPriceOfferWarning}
+                      </div>
+                    )}
+                    {isOfferActionPending && offerProgress && (
+                      <div className="mt-3 p-3 bg-cyan-950/20 border border-cyan-400/20 rounded-xl text-center flex items-center justify-center gap-2">
+                        <RefreshCw size={12} className="animate-spin text-cyan-400 shrink-0" />
+                        <span className="text-[10px] text-cyan-400 font-mono font-black uppercase tracking-wider">{offerProgress}</span>
+                      </div>
+                    )}
                   </div>
 
                 </div>
@@ -1163,14 +1459,13 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
             {/* Complete Offer History */}
             <div className="border-t border-white/5 pt-5">
               <h3 className="text-xs font-mono uppercase tracking-widest text-[#94a3b8] font-black mb-3">Offer History</h3>
-              {state.offers.filter(o => o.tokenId === cardId).length === 0 ? (
+              {cardOffers.length === 0 ? (
                 <div className="py-8 bg-black/10 border border-white/5 border-dashed rounded-2xl text-center text-xs text-white/30 uppercase tracking-wider font-mono">
                   No offers placed yet
                 </div>
               ) : (
                 <div className="bg-[#09090c] border border-white/5 rounded-2xl p-4 divide-y divide-white/[0.04] text-xs font-mono text-left max-h-56 overflow-y-auto">
-                  {state.offers
-                    .filter(o => o.tokenId === cardId)
+                  {cardOffers
                     .map((offer) => {
                       const isMyOffer = state.walletConnected && state.walletAddress.toLowerCase() === offer.offerer.toLowerCase();
                       const offererNameFormatted = offer.offerer.startsWith("0x") && offer.offerer.length > 10 
@@ -1194,22 +1489,25 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
                                 <div className="flex gap-1.5">
                                   <button
                                     onClick={() => handleAcceptOffer(offer)}
-                                    className="px-3 py-1.5 rounded-lg bg-cyan-400 hover:bg-cyan-300 text-black text-[9px] font-black uppercase transition-all cursor-pointer"
+                                    disabled={isOfferActionPending || ownerActionsDisabled}
+                                    className="px-3 py-1.5 rounded-lg bg-cyan-400 hover:bg-cyan-300 text-black text-[9px] font-black uppercase transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                                   >
                                     Accept
                                   </button>
                                   <button
-                                    onClick={() => handleCancelOffer(offer.offerId)}
-                                    className="px-3 py-1.5 rounded-lg bg-red-950/20 border border-red-500/20 hover:bg-red-900/30 text-red-400 text-[9px] font-black uppercase transition-all cursor-pointer"
+                                    disabled
+                                    title="Reject is unavailable onchain. This contract only supports accepting an offer or waiting for the maker to cancel it."
+                                    className="px-3 py-1.5 rounded-lg bg-red-950/20 border border-red-500/20 text-red-400/40 text-[9px] font-black uppercase transition-all cursor-not-allowed"
                                   >
-                                    Reject
+                                    Reject N/A
                                   </button>
                                 </div>
                               ) : (
                                 isMyOffer && (
                                   <button
-                                    onClick={() => handleCancelOffer(offer.offerId)}
-                                    className="text-red-400 hover:text-red-350 p-1.5 transition-colors cursor-pointer"
+                                    onClick={() => handleCancelOffer(offer)}
+                                    disabled={isOfferActionPending}
+                                    className="text-red-400 hover:text-red-350 p-1.5 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                                     title="Withdraw Escrow Offer"
                                   >
                                     <Trash2 size={13} />

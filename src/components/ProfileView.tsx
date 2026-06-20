@@ -232,136 +232,29 @@ export function ProfileView({ setCurrentView, setSelectedCardId }: ProfileViewPr
     return list;
   }, [state.cards, state.walletConnected, state.walletAddress]);
 
-  // Active offers derived from state.offers involving the logged in user
+  // Offer actions are managed from NFT details where live onchain offers are read.
   const activeOffers = useMemo(() => {
-    if (!state.walletConnected || !state.walletAddress) return [];
-    const userAddr = state.walletAddress.toLowerCase();
-
-    return (state.offers || [])
-      .filter(offer => offer.active)
-      .map(offer => {
-        const card = state.cards.find(c => c.tokenId === offer.tokenId);
-        if (!card) return null;
-
-        const isOwner = card.owner.toLowerCase() === userAddr;
-        const isOfferer = offer.offerer.toLowerCase() === userAddr;
-
-        if (!isOwner && !isOfferer) return null;
-
-        return {
-          offerId: offer.offerId,
-          tokenId: offer.tokenId,
-          cardName: card.name,
-          imageUrl: card.imageUrl,
-          offerer: offer.offerer,
-          offererName: offer.offererName,
-          amount: offer.amount,
-          timestamp: offer.createdAt,
-          active: offer.active,
-          isOwner,
-          isOfferer
-        };
-      })
-      .filter((o): o is NonNullable<typeof o> => o !== null);
-  }, [state.offers, state.cards, state.walletConnected, state.walletAddress]);
+    return [];
+  }, []);
 
   // Accept Offer (Owner Action)
   const handleAcceptOffer = (offerId: string) => {
     const offer = state.offers.find(o => o.offerId === offerId);
-    if (!offer) return;
-    
-    const card = state.cards.find(c => c.tokenId === offer.tokenId);
-    if (!card) return;
-
-    const buyer = offer.offerer;
-    const seller = card.owner;
-    const payment = offer.amount;
-
-    // Transmute ownership
-    const updatedCards = state.cards.map(c => {
-      if (c.tokenId === card.tokenId) {
-        return {
-          ...c,
-          owner: buyer,
-          isListed: false,
-          price: undefined
-        };
-      }
-      return c;
-    });
-
-    // Close offer
-    const updatedOffers = state.offers.map(o => {
-      if (o.offerId === offer.offerId) {
-        return { ...o, active: false };
-      }
-      return o;
-    });
-
-    const newLog: ActivityLog = {
-      id: "log_" + Date.now(),
-      tokenId: card.tokenId,
-      type: "buy",
-      fromAddress: seller,
-      toAddress: buyer,
-      amount: payment,
-      timestamp: new Date().toISOString()
-    };
-
-    // Credit the seller with the bid amount
-    const updatedState = {
-      ...state,
-      cards: updatedCards,
-      offers: updatedOffers,
-      balance: parseFloat((state.balance + payment).toFixed(4)),
-      logs: [newLog, ...state.logs]
-    };
-
-    setState(updatedState);
-    saveState(updatedState);
-    showNotification(`🎉 Offer of ${payment} USDC accepted! Ownership transferred.`);
+    showNotification("Manage offers from NFT detail page.");
+    if (offer) {
+      setSelectedCardId(offer.tokenId);
+      setCurrentView('card-details');
+    }
   };
 
   // Cancel/Reject Offer
   const handleCancelOffer = (offerId: string) => {
-    const offerToCancel = state.offers.find(o => o.offerId === offerId);
-    if (!offerToCancel) return;
-
-    const isOfferer = state.walletConnected && state.walletAddress.toLowerCase() === offerToCancel.offerer.toLowerCase();
-
-    // Give funds back if canceled by offerer
-    let refundAmount = 0;
-    if (isOfferer) {
-      refundAmount = offerToCancel.amount;
+    const offer = state.offers.find(o => o.offerId === offerId);
+    showNotification("Manage offers from NFT detail page.");
+    if (offer) {
+      setSelectedCardId(offer.tokenId);
+      setCurrentView('card-details');
     }
-
-    const updatedOffers = state.offers.map(o => {
-      if (o.offerId === offerId) {
-        return { ...o, active: false };
-      }
-      return o;
-    });
-
-    const newLog: ActivityLog = {
-      id: "log_" + Date.now(),
-      tokenId: offerToCancel.tokenId,
-      type: "cancel_offer",
-      fromAddress: offerToCancel.offerer,
-      toAddress: state.cards.find(c => c.tokenId === offerToCancel.tokenId)?.owner || "0x0000000000000000000000000000000000000000",
-      amount: offerToCancel.amount,
-      timestamp: new Date().toISOString()
-    };
-
-    const updatedState = {
-      ...state,
-      offers: updatedOffers,
-      balance: parseFloat((state.balance + refundAmount).toFixed(4)),
-      logs: [newLog, ...state.logs]
-    };
-
-    setState(updatedState);
-    saveState(updatedState);
-    showNotification(isOfferer ? "🤝 Escrow offer withdrawn! USDC tokens refunded to balance." : "❌ Offer rejected successfully.");
   };
 
   // Activity logs display

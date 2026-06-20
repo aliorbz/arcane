@@ -1,6 +1,6 @@
-import { createPublicClient, http } from 'viem';
+import { createPublicClient, formatEther, http } from 'viem';
 import { RITUAL_NETWORK, CONTRACTS } from './config';
-import { RitualCard } from '../types';
+import { CardOffer, RitualCard } from '../types';
 
 export const publicClient = createPublicClient({
   chain: {
@@ -125,11 +125,7 @@ export async function fetchOnchainCards(): Promise<RitualCard[]> {
           mediaType: category === "video" ? "video" : category === "audio" ? "audio" : "image",
           listingId: activeListingIdStr || undefined,
           royaltyPercent: 5,
-          attributes: [
-            { trait_type: "Category", value: category.toUpperCase() },
-            { trait_type: "Edition", value: "#" + tokenIdStr },
-            { trait_type: "Network", value: "Arc Testnet" }
-          ],
+          attributes: [],
           creator: owner,
           createdAt: new Date(1716500000000 + Number(tokenId) * 86400000).toISOString(),
           // Kept for backwards compatibility with old components
@@ -157,4 +153,97 @@ export async function fetchOnchainCards(): Promise<RitualCard[]> {
     console.warn("[onchain] fetchOnchainCards bypassed:", error.message || error);
     return [];
   }
+}
+
+export async function fetchOnchainOffers(
+  nftAddress: `0x${string}`,
+  tokenId: string
+): Promise<CardOffer[]> {
+  if (!/^\d+$/.test(tokenId)) return [];
+
+  try {
+    const tokenIdBigInt = BigInt(tokenId);
+    const offerers = await (publicClient as any).readContract({
+      address: CONTRACTS.MARKETPLACE.address as `0x${string}`,
+      abi: CONTRACTS.MARKETPLACE.abi,
+      functionName: 'getOfferers',
+      args: [nftAddress, tokenIdBigInt],
+    }) as `0x${string}`[];
+
+    const uniqueOfferers = Array.from(new Set(offerers.map(offerer => offerer.toLowerCase()))) as `0x${string}`[];
+
+    const offers = await Promise.all(
+      uniqueOfferers.map(async offererAddress => {
+        const offer = await (publicClient as any).readContract({
+          address: CONTRACTS.MARKETPLACE.address as `0x${string}`,
+          abi: CONTRACTS.MARKETPLACE.abi,
+          functionName: 'offers',
+          args: [nftAddress, tokenIdBigInt, offererAddress],
+        }) as [`0x${string}`, bigint, boolean];
+
+        const [offerer, amount, active] = offer;
+        if (!active || amount <= 0n) return null;
+
+        const cardOffer: CardOffer = {
+          offerId: `${tokenId}_${offerer.toLowerCase()}`,
+          tokenId,
+          offerer,
+          offererName: `${offerer.substring(0, 6)}...${offerer.substring(offerer.length - 4)}`,
+          amount: Number(formatEther(amount)),
+          active,
+          createdAt: "",
+        };
+
+        return cardOffer;
+      })
+    );
+
+    return offers
+      .filter((offer): offer is CardOffer => offer !== null)
+      .sort((a, b) => b.amount - a.amount);
+  } catch (error: any) {
+    console.warn(`[onchain] fetchOnchainOffers bypassed for tokenId ${tokenId}:`, error.message || error);
+    return [];
+  }
+}
+
+export async function flagInvalidLocalCards(
+  localCards: RitualCard[],
+  onchainCards: RitualCard[]
+): Promise<RitualCard[]> {
+  const onchainIds = new Set(onchainCards.map(card => card.tokenId));
+  const checks = await Promise.all(
+    localCards.map(async card => {
+      if (onchainIds.has(card.tokenId) || card.invalidOnchain || !/^\d+$/.test(card.tokenId)) {
+        return { tokenId: card.tokenId, invalid: false };
+      }
+
+      try {
+        await (publicClient as any).readContract({
+          address: CONTRACTS.NFT.address as `0x${string}`,
+          abi: CONTRACTS.NFT.abi,
+          functionName: 'ownerOf',
+          args: [BigInt(card.tokenId)],
+        });
+        return { tokenId: card.tokenId, invalid: false };
+      } catch {
+        return { tokenId: card.tokenId, invalid: true };
+      }
+    })
+  );
+
+  const invalidTokenIds = new Set(checks.filter(check => check.invalid).map(check => check.tokenId));
+  if (invalidTokenIds.size === 0) return localCards;
+
+  return localCards.map(card => {
+    if (!invalidTokenIds.has(card.tokenId)) return card;
+    return {
+      ...card,
+      invalidOnchain: true,
+      localOnly: true,
+      isListed: false,
+      price: undefined,
+      listingId: undefined
+    };
+  });
 }

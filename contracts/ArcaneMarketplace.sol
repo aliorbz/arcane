@@ -1,22 +1,31 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/interfaces/IERC2981.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/utils/Counters.sol";
+import "@openzeppelin/contracts/utils/introspection/ERC165Checker.sol";
 
 /**
  * @title ArcaneMarketplace
- * @dev An OpenSea-grade peer-to-peer NFT Trading Marketplace built for Arc Testnet.
- * Supports listing, cancellation, instant purchasing, on-chain custom bidding (makes offers, accepts, cancels),
- * and platform trade fee distribution of standard ERC721 items.
+ * @dev Native-token marketplace for ARCANE ERC721 assets on Arc Testnet.
+ *
+ * ARCANE sale split:
+ * - 2.5% marketplace fee
+ * - 2.5% creator royalty when the NFT supports ERC-2981
+ * - 95% seller proceeds for ARCANE NFTs using the default royalty
  */
 contract ArcaneMarketplace is ReentrancyGuard, Ownable {
     using Counters for Counters.Counter;
+    using ERC165Checker for address;
+
+    uint96 public constant MARKETPLACE_FEE_BPS = 250; // 2.5%
+    uint96 public constant FEE_DENOMINATOR = 10_000;
+
     Counters.Counter private _listingIdCounter;
 
-    uint256 public constant PLATFORM_FEE_PERCENT = 5; // 5% protocol fee
     address public feeReceiver;
 
     struct Listing {
@@ -24,84 +33,100 @@ contract ArcaneMarketplace is ReentrancyGuard, Ownable {
         address nftAddress;
         uint256 tokenId;
         address seller;
-        uint256 price;   // in wei (since USDC is native gas on Arc)
+        uint256 price;
         bool active;
     }
 
     struct Offer {
         address offerer;
-        uint256 amount;  // in wei
+        uint256 amount;
         bool active;
     }
 
-    // Listing ID => Listing Data
     mapping(uint256 => Listing) public listings;
-
-    // NFT Address => Token ID => Active Listing ID
     mapping(address => mapping(uint256 => uint256)) public activeListings;
-
-    // NFT Address => Token ID => Offerer Address => Offer Data
     mapping(address => mapping(uint256 => mapping(address => Offer))) public offers;
-
-    // NFT Address => Token ID => List of unique offerers to support getOfferers retrieval
     mapping(address => mapping(uint256 => address[])) private _tokenOfferers;
 
-    event ItemListed(uint256 indexed listingId, address indexed nftAddress, uint256 indexed tokenId, address seller, uint256 price);
+    event FeeReceiverUpdated(address indexed feeReceiver);
+    event ItemListed(
+        uint256 indexed listingId,
+        address indexed nftAddress,
+        uint256 indexed tokenId,
+        address seller,
+        uint256 price
+    );
     event ListingCancelled(uint256 indexed listingId);
-    event ItemBought(uint256 indexed listingId, address indexed nftAddress, uint256 indexed tokenId, address buyer, uint256 price);
+    event ItemBought(
+        uint256 indexed listingId,
+        address indexed nftAddress,
+        uint256 indexed tokenId,
+        address buyer,
+        uint256 price,
+        uint256 sellerProceeds,
+        uint256 creatorRoyalty,
+        uint256 marketplaceFee
+    );
     event OfferMade(address indexed nftAddress, uint256 indexed tokenId, address indexed offerer, uint256 amount);
-    event OfferCancelled(address indexed nftAddress, uint256 indexed tokenId, address indexed offerer);
-    event OfferAccepted(address indexed nftAddress, uint256 indexed tokenId, address seller, address indexed offerer, uint256 amount);
+    event OfferEdited(address indexed nftAddress, uint256 indexed tokenId, address indexed offerer, uint256 oldAmount, uint256 newAmount);
+    event OfferCancelled(address indexed nftAddress, uint256 indexed tokenId, address indexed offerer, uint256 amount);
+    event OfferAccepted(
+        address indexed nftAddress,
+        uint256 indexed tokenId,
+        address seller,
+        address indexed offerer,
+        uint256 amount,
+        uint256 sellerProceeds,
+        uint256 creatorRoyalty,
+        uint256 marketplaceFee
+    );
 
-    constructor() Ownable() {
-        feeReceiver = msg.sender;
-    }
-
-    /**
-     * @dev Sets a new platform protocol fee receiver address.
-     */
-    function setFeeReceiver(address _feeReceiver) external onlyOwner {
-        require(_feeReceiver != address(0), "ARCANE: Fee receiver cannot be null");
+    constructor(address _feeReceiver) {
+        require(_feeReceiver != address(0), "ARCANE: fee receiver cannot be zero");
         feeReceiver = _feeReceiver;
+        emit FeeReceiverUpdated(_feeReceiver);
     }
 
-    /**
-     * @dev List a digital artifact NFT for sale on the peer-to-peer market.
-     */
+    function setFeeReceiver(address _feeReceiver) external onlyOwner {
+        require(_feeReceiver != address(0), "ARCANE: fee receiver cannot be zero");
+        feeReceiver = _feeReceiver;
+        emit FeeReceiverUpdated(_feeReceiver);
+    }
+
     function listItem(address nftAddress, uint256 tokenId, uint256 price) external nonReentrant {
-        require(price > 0, "ARCANE: Listing price must be greater than zero");
-        
+        require(price > 0, "ARCANE: price must be greater than zero");
+        require(activeListings[nftAddress][tokenId] == 0, "ARCANE: item already listed");
+
         IERC721 nft = IERC721(nftAddress);
-        require(nft.ownerOf(tokenId) == msg.sender, "ARCANE: Caller does not own the requested token");
-        require(nft.isApprovedForAll(msg.sender, address(this)) || nft.getApproved(tokenId) == address(this), "ARCANE: Marketplace not approved to handle asset");
-
-        _listingIdCounter.increment();
-        uint256 newListingId = _listingIdCounter.current();
-
-        listings[newListingId] = Listing(
-            newListingId,
-            nftAddress,
-            tokenId,
-            msg.sender,
-            price,
-            true
+        require(nft.ownerOf(tokenId) == msg.sender, "ARCANE: caller is not token owner");
+        require(
+            nft.isApprovedForAll(msg.sender, address(this)) || nft.getApproved(tokenId) == address(this),
+            "ARCANE: marketplace not approved"
         );
 
-        activeListings[nftAddress][tokenId] = newListingId;
+        _listingIdCounter.increment();
+        uint256 listingId = _listingIdCounter.current();
 
-        emit ItemListed(newListingId, nftAddress, tokenId, msg.sender, price);
+        listings[listingId] = Listing({
+            listingId: listingId,
+            nftAddress: nftAddress,
+            tokenId: tokenId,
+            seller: msg.sender,
+            price: price,
+            active: true
+        });
+
+        activeListings[nftAddress][tokenId] = listingId;
+
+        emit ItemListed(listingId, nftAddress, tokenId, msg.sender, price);
     }
 
-    /**
-     * @dev Cancel an active item listing.
-     */
     function cancelListing(uint256 listingId) external nonReentrant {
         Listing storage listing = listings[listingId];
-        require(listing.active, "ARCANE: This listing has already been closed");
-        require(listing.seller == msg.sender || owner() == msg.sender, "ARCANE: Caller is not the creator of this listing");
+        require(listing.active, "ARCANE: listing is not active");
+        require(listing.seller == msg.sender || owner() == msg.sender, "ARCANE: caller cannot cancel listing");
 
         listing.active = false;
-        
         if (activeListings[listing.nftAddress][listing.tokenId] == listingId) {
             delete activeListings[listing.nftAddress][listing.tokenId];
         }
@@ -109,122 +134,128 @@ contract ArcaneMarketplace is ReentrancyGuard, Ownable {
         emit ListingCancelled(listingId);
     }
 
-    /**
-     * @dev Complete purchase of a listed item. Supports platform fee distribution.
-     */
     function buyItem(uint256 listingId) external payable nonReentrant {
         Listing storage listing = listings[listingId];
-        require(listing.active, "ARCANE: Requested listing is not active");
-        require(msg.value >= listing.price, "ARCANE: Insufficient funds sent to complete buy purchase");
+        require(listing.active, "ARCANE: listing is not active");
+        require(msg.sender != listing.seller, "ARCANE: seller cannot buy own listing");
+        require(msg.value >= listing.price, "ARCANE: insufficient payment");
+
+        IERC721 nft = IERC721(listing.nftAddress);
+        require(nft.ownerOf(listing.tokenId) == listing.seller, "ARCANE: seller no longer owns token");
 
         listing.active = false;
         delete activeListings[listing.nftAddress][listing.tokenId];
 
-        uint256 fee = (listing.price * PLATFORM_FEE_PERCENT) / 100;
-        uint256 sellerProceeds = listing.price - fee;
+        (uint256 marketplaceFee, address royaltyReceiver, uint256 creatorRoyalty, uint256 sellerProceeds) =
+            _calculatePayouts(listing.nftAddress, listing.tokenId, listing.price, listing.seller);
 
-        // Transfer platform protocol fee
-        if (fee > 0) {
-            payable(feeReceiver).transfer(fee);
+        _payout(listing.seller, sellerProceeds);
+        if (creatorRoyalty > 0) {
+            _payout(royaltyReceiver, creatorRoyalty);
         }
-
-        // Transfer trade proceeds to seller
-        payable(listing.seller).transfer(sellerProceeds);
-
-        // Refund any extra gas/overpayment safely (Arc uses USDC as gas token)
+        if (marketplaceFee > 0) {
+            _payout(feeReceiver, marketplaceFee);
+        }
         if (msg.value > listing.price) {
-            payable(msg.sender).transfer(msg.value - listing.price);
+            _payout(msg.sender, msg.value - listing.price);
         }
 
-        // Convey the ERC721 token ownership to the buyer
-        IERC721(listing.nftAddress).safeTransferFrom(listing.seller, msg.sender, listing.tokenId);
+        nft.safeTransferFrom(listing.seller, msg.sender, listing.tokenId);
 
-        emit ItemBought(listingId, listing.nftAddress, listing.tokenId, msg.sender, listing.price);
+        emit ItemBought(
+            listingId,
+            listing.nftAddress,
+            listing.tokenId,
+            msg.sender,
+            listing.price,
+            sellerProceeds,
+            creatorRoyalty,
+            marketplaceFee
+        );
     }
 
-    /**
-     * @dev Put down an Escrowed on-chain bid (Offer/Offer purchase) for any token.
-     */
     function makeOffer(address nftAddress, uint256 tokenId) external payable nonReentrant {
-        require(msg.value > 0, "ARCANE: Offer amount must be greater than zero");
-        
+        require(msg.value > 0, "ARCANE: offer must be greater than zero");
+        require(IERC721(nftAddress).ownerOf(tokenId) != msg.sender, "ARCANE: owner cannot offer on own token");
+
         Offer storage existing = offers[nftAddress][tokenId][msg.sender];
         if (existing.active) {
-            // Refund their previous offer so they can place a new premium bid
-            uint256 overflow = existing.amount;
-            existing.active = false;
-            payable(msg.sender).transfer(overflow);
-        } else {
-            // Track key unique offerers
-            _tokenOfferers[nftAddress][tokenId].push(msg.sender);
+            uint256 oldAmount = existing.amount;
+            existing.amount = msg.value;
+            _payout(msg.sender, oldAmount);
+            emit OfferEdited(nftAddress, tokenId, msg.sender, oldAmount, msg.value);
+            return;
         }
 
-        offers[nftAddress][tokenId][msg.sender] = Offer(
-            msg.sender,
-            msg.value,
-            true
-        );
+        _tokenOfferers[nftAddress][tokenId].push(msg.sender);
+        offers[nftAddress][tokenId][msg.sender] = Offer({
+            offerer: msg.sender,
+            amount: msg.value,
+            active: true
+        });
 
         emit OfferMade(nftAddress, tokenId, msg.sender, msg.value);
     }
 
-    /**
-     * @dev Cancel an active on-chain offer and reclaim escrowed USDC gas tokens.
-     */
     function cancelOffer(address nftAddress, uint256 tokenId) external nonReentrant {
         Offer storage offer = offers[nftAddress][tokenId][msg.sender];
-        require(offer.active, "ARCANE: No active bid or offer found to cancel");
+        require(offer.active, "ARCANE: no active offer");
 
         uint256 refundAmount = offer.amount;
         offer.active = false;
         offer.amount = 0;
 
-        payable(msg.sender).transfer(refundAmount);
+        _payout(msg.sender, refundAmount);
 
-        emit OfferCancelled(nftAddress, tokenId, msg.sender);
+        emit OfferCancelled(nftAddress, tokenId, msg.sender, refundAmount);
     }
 
-    /**
-     * @dev Token owner accepts a pending on-chain bid. Resolves escrowed proceeds, enforces fees, and shifts ownership.
-     */
     function acceptOffer(address nftAddress, uint256 tokenId, address offerer) external nonReentrant {
         IERC721 nft = IERC721(nftAddress);
-        require(nft.ownerOf(tokenId) == msg.sender, "ARCANE: Caller is not the legal owner of this asset");
+        require(nft.ownerOf(tokenId) == msg.sender, "ARCANE: caller is not token owner");
+        require(
+            nft.isApprovedForAll(msg.sender, address(this)) || nft.getApproved(tokenId) == address(this),
+            "ARCANE: marketplace not approved"
+        );
 
         Offer storage offer = offers[nftAddress][tokenId][offerer];
-        require(offer.active, "ARCANE: Specified user offer is not active");
+        require(offer.active, "ARCANE: offer is not active");
 
         uint256 offerAmount = offer.amount;
         offer.active = false;
         offer.amount = 0;
 
-        // Cancel any active seller listings automatically
         uint256 activeListingId = activeListings[nftAddress][tokenId];
         if (activeListingId > 0) {
             listings[activeListingId].active = false;
             delete activeListings[nftAddress][tokenId];
         }
 
-        uint256 fee = (offerAmount * PLATFORM_FEE_PERCENT) / 100;
-        uint256 sellerProceeds = offerAmount - fee;
+        (uint256 marketplaceFee, address royaltyReceiver, uint256 creatorRoyalty, uint256 sellerProceeds) =
+            _calculatePayouts(nftAddress, tokenId, offerAmount, msg.sender);
 
-        // Distribute fee
-        if (fee > 0) {
-            payable(feeReceiver).transfer(fee);
-        }
-
-        // Pay seller proceeds
-        payable(msg.sender).transfer(sellerProceeds);
-
-        // Convey the ERC721 ownership from seller to offerer
         nft.safeTransferFrom(msg.sender, offerer, tokenId);
 
-        emit OfferAccepted(nftAddress, tokenId, msg.sender, offerer, offerAmount);
+        _payout(msg.sender, sellerProceeds);
+        if (creatorRoyalty > 0) {
+            _payout(royaltyReceiver, creatorRoyalty);
+        }
+        if (marketplaceFee > 0) {
+            _payout(feeReceiver, marketplaceFee);
+        }
+
+        emit OfferAccepted(
+            nftAddress,
+            tokenId,
+            msg.sender,
+            offerer,
+            offerAmount,
+            sellerProceeds,
+            creatorRoyalty,
+            marketplaceFee
+        );
     }
 
-    /**
-     * @dev Returns array of public addresses currently offering bids on a requested item.
-     */
     function getOfferers(address nftAddress, uint256 tokenId) external view returns (address[] memory) {
         address[] memory raw = _tokenOfferers[nftAddress][tokenId];
         uint256 activeCount = 0;
@@ -245,5 +276,35 @@ contract ArcaneMarketplace is ReentrancyGuard, Ownable {
         }
 
         return activeOnly;
+    }
+
+    function _calculatePayouts(
+        address nftAddress,
+        uint256 tokenId,
+        uint256 salePrice,
+        address seller
+    )
+        internal
+        view
+        returns (uint256 marketplaceFee, address royaltyReceiver, uint256 creatorRoyalty, uint256 sellerProceeds)
+    {
+        marketplaceFee = (salePrice * MARKETPLACE_FEE_BPS) / FEE_DENOMINATOR;
+
+        if (nftAddress.supportsInterface(type(IERC2981).interfaceId)) {
+            (royaltyReceiver, creatorRoyalty) = IERC2981(nftAddress).royaltyInfo(tokenId, salePrice);
+            if (royaltyReceiver == seller) {
+                creatorRoyalty = 0;
+            }
+        }
+
+        require(marketplaceFee + creatorRoyalty <= salePrice, "ARCANE: fee total exceeds price");
+        sellerProceeds = salePrice - marketplaceFee - creatorRoyalty;
+    }
+
+    function _payout(address to, uint256 amount) internal {
+        if (amount == 0) return;
+        require(to != address(0), "ARCANE: payout to zero address");
+        (bool sent, ) = payable(to).call{value: amount}("");
+        require(sent, "ARCANE: payout failed");
     }
 }

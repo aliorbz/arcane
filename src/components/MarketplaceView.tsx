@@ -2,8 +2,8 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { Search, SlidersHorizontal, Grid, AlertTriangle, Tag, Trash2, Hand, X, ShoppingCart, Heart } from 'lucide-react';
-import { getSavedState, saveState, ROLE_CONFIGS } from '../lib/mockData';
-import { RitualCard, CardOffer, ActivityLog } from '../types';
+import { getSavedState, ROLE_CONFIGS } from '../lib/mockData';
+import { RitualCard } from '../types';
 import { useAccount } from 'wagmi';
 
 interface MarketplaceViewProps {
@@ -94,12 +94,6 @@ export function MarketplaceView({ setCurrentView, setSelectedCardId }: Marketpla
     }, 4000);
   };
 
-  // Sync state helper
-  const updateLocalState = (newState: Partial<typeof state>) => {
-    const updated = { ...state, ...newState };
-    setState(updated);
-    saveState(updated);
-  };
 
   const handleConnectWalletFirst = () => {
     showNotification("⚠️ Please connect your Web3 wallet first in the top bar!");
@@ -125,182 +119,35 @@ export function MarketplaceView({ setCurrentView, setSelectedCardId }: Marketpla
 
   // Buy item action
   const executeBuy = (card: RitualCard) => {
-    if (!state.walletConnected || !state.walletAddress) {
-      handleConnectWalletFirst();
-      return;
-    }
-    if (!isConnected) {
-      showNotification("❌ Buy flow not connected yet");
-      return;
-    }
-    const cost = card.price || 0;
-    if (state.balance < cost) {
-      showNotification("❌ Insufficient balance to purchase this NFT!");
-      return;
-    }
-
-    const seller = card.owner;
-    const buyer = state.walletAddress;
-
-    const updatedCards = state.cards.map(c => {
-      if (c.tokenId === card.tokenId) {
-        return {
-          ...c,
-          owner: buyer,
-          isListed: false,
-          price: undefined
-        };
-      }
-      return c;
-    });
-
-    const newLog: ActivityLog = {
-      id: "log_" + Date.now(),
-      tokenId: card.tokenId,
-      type: 'buy',
-      fromAddress: seller,
-      toAddress: buyer,
-      amount: cost,
-      timestamp: new Date().toISOString()
-    };
-
-    let balanceChange = -cost;
-    const isUserCreator = (card.creator || "0xBE0848a9315da2ffbc28a9ea56b0d4b42413c8be").toLowerCase() === state.walletAddress?.toLowerCase();
-    if (isUserCreator) {
-      balanceChange += cost * 0.025;
-    }
-
-    const updatedState = {
-      ...state,
-      cards: updatedCards,
-      balance: parseFloat((state.balance + balanceChange).toFixed(4)),
-      logs: [newLog, ...state.logs]
-    };
-
     setSelectedCardForBuy(null);
-    updateLocalState(updatedState);
-    showNotification(`🎉 Congratulations! You purchased "${card.name}" for ${cost} USDC!`);
+    showNotification("Open NFT details to buy onchain.");
+    setSelectedCardId(card.tokenId);
+    setCurrentView('card-details');
   };
 
   // List item action
-  const executeList = (card: RitualCard, priceInUSDC: number) => {
-    if (isNaN(priceInUSDC) || priceInUSDC <= 0) {
-      showNotification("❌ Please enter a valid listing price greater than 0 USDC.");
-      return;
-    }
-
-    const listingFee = 0.01;
-    if (state.balance < listingFee) {
-      showNotification("❌ Insufficient balance to pay listing fee (0.01 USDC).");
-      return;
-    }
-
-    const updatedCards = state.cards.map(c => {
-      if (c.tokenId === card.tokenId) {
-        return {
-          ...c,
-          isListed: true,
-          price: priceInUSDC
-        };
-      }
-      return c;
-    });
-
-    const newLog: ActivityLog = {
-      id: "log_" + Date.now(),
-      tokenId: card.tokenId,
-      type: 'list',
-      fromAddress: state.walletAddress,
-      toAddress: "0x0000000000000000000000000000000000000000",
-      amount: priceInUSDC,
-      timestamp: new Date().toISOString()
-    };
-
-    const updatedState = {
-      ...state,
-      cards: updatedCards,
-      balance: parseFloat((state.balance - listingFee).toFixed(4)),
-      logs: [newLog, ...state.logs]
-    };
-
+  const executeList = (card: RitualCard, _priceInUSDC: number) => {
     setSelectedCardForList(null);
     setListingPriceInput("");
-    updateLocalState(updatedState);
-    showNotification(`✅ Successfully listed "${card.name}" for sale at ${priceInUSDC} USDC (local/dev state).`);
+    showNotification("Manage listings from NFT detail page.");
+    setSelectedCardId(card.tokenId);
+    setCurrentView('card-details');
   };
 
   // Cancel listing action
   const executeCancelList = (card: RitualCard) => {
-    const updatedCards = state.cards.map(c => {
-      if (c.tokenId === card.tokenId) {
-        return {
-          ...c,
-          isListed: false,
-          price: undefined
-        };
-      }
-      return c;
-    });
-
-    const newLog: ActivityLog = {
-      id: "log_" + Date.now(),
-      tokenId: card.tokenId,
-      type: 'cancel_list',
-      fromAddress: state.walletAddress,
-      toAddress: "0x0000000000000000000000000000000000000000",
-      timestamp: new Date().toISOString()
-    };
-
-    updateLocalState({
-      ...state,
-      cards: updatedCards,
-      logs: [newLog, ...state.logs]
-    });
-    showNotification(`🗑️ Canceled listing for "${card.name}".`);
+    showNotification("Manage listings from NFT detail page.");
+    setSelectedCardId(card.tokenId);
+    setCurrentView('card-details');
   };
 
   // Make Offer action
-  const executeMakeOffer = (card: RitualCard, bidAmount: number) => {
-    if (isNaN(bidAmount) || bidAmount <= 0) {
-      showNotification("❌ Enter a valid offer price greater than 0 USDC.");
-      return;
-    }
-    if (state.balance < bidAmount) {
-      showNotification("❌ Insufficient balance for this offer!");
-      return;
-    }
-
-    const newOffer: CardOffer = {
-      offerId: "offer_" + Date.now(),
-      tokenId: card.tokenId,
-      offerer: state.walletAddress,
-      offererName: state.discordUser ? (state.discordUser as any).name : "Anonymous Collector",
-      amount: bidAmount,
-      active: true,
-      createdAt: new Date().toISOString()
-    };
-
-    const newLog: ActivityLog = {
-      id: "log_" + Date.now(),
-      tokenId: card.tokenId,
-      type: 'offer',
-      fromAddress: state.walletAddress,
-      toAddress: card.owner,
-      amount: bidAmount,
-      timestamp: new Date().toISOString()
-    };
-
-    const updatedState = {
-      ...state,
-      offers: [newOffer, ...state.offers],
-      balance: parseFloat((state.balance - bidAmount).toFixed(4)),
-      logs: [newLog, ...state.logs]
-    };
-
+  const executeMakeOffer = (card: RitualCard, _bidAmount: number) => {
     setSelectedCardForOffer(null);
     setBidAmountInput("");
-    updateLocalState(updatedState);
-    showNotification(`🤝 Your bid of ${bidAmount} USDC was placed successfully.`);
+    showNotification("Manage offers from NFT detail page.");
+    setSelectedCardId(card.tokenId);
+    setCurrentView('card-details');
   };
 
   // Filter & Sort dynamic logic
@@ -919,7 +766,7 @@ export function MarketplaceView({ setCurrentView, setSelectedCardId }: Marketpla
               <ShoppingCart className="text-cyan-400 mb-4" size={32} />
               <h3 className="text-xl font-black uppercase tracking-tight mb-2">Confirm Purchase</h3>
               <p className="text-white/50 text-sm mb-6 leading-relaxed font-sans font-medium">
-                You are purchasing the NFT <strong className="text-white">"{selectedCardForBuy.name}"</strong>. It will be safely transferred to your connected wallet address instantaneously using Simulated Blockchain ledger consensus.
+                Open NFT details to complete the onchain purchase for <strong className="text-white">"{selectedCardForBuy.name}"</strong>.
               </p>
 
               <div className="bg-[#050505] rounded-2xl p-4 mb-6 flex justify-between items-center border border-white/5 font-mono">

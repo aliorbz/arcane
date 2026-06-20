@@ -92,6 +92,50 @@ export const INITIAL_PRESET_OFFERS: CardOffer[] = [];
 
 export const INITIAL_ACTIVITY_LOGS: ActivityLog[] = [];
 
+const STORAGE_KEYS = {
+  cards: "arcane_cards",
+  logs: "arcane_logs",
+  offers: "arcane_offers",
+  walletAddress: "arcane_wallet_address",
+  walletBalance: "arcane_wallet_balance",
+  discordUser: "arcane_discord_user",
+  walletConnected: "arcane_wallet_connected"
+} as const;
+
+const LEGACY_STORAGE_KEYS = {
+  cards: "ritual_tcg_cards",
+  logs: "ritual_tcg_logs",
+  offers: "ritual_tcg_offers",
+  walletAddress: "ritual_tcg_wallet_address",
+  walletBalance: "ritual_tcg_wallet_balance",
+  discordUser: "ritual_tcg_discord_user",
+  walletConnected: "ritual_tcg_wallet_connected",
+  discordConnected: "ritual_tcg_discord_connected"
+} as const;
+
+function migrateLegacyStorageKeys() {
+  const migrations = [
+    [LEGACY_STORAGE_KEYS.cards, STORAGE_KEYS.cards],
+    [LEGACY_STORAGE_KEYS.logs, STORAGE_KEYS.logs],
+    [LEGACY_STORAGE_KEYS.offers, STORAGE_KEYS.offers],
+    [LEGACY_STORAGE_KEYS.walletAddress, STORAGE_KEYS.walletAddress],
+    [LEGACY_STORAGE_KEYS.walletBalance, STORAGE_KEYS.walletBalance],
+    [LEGACY_STORAGE_KEYS.discordUser, STORAGE_KEYS.discordUser],
+    [LEGACY_STORAGE_KEYS.walletConnected, STORAGE_KEYS.walletConnected]
+  ] as const;
+
+  migrations.forEach(([legacyKey, arcaneKey]) => {
+    const legacyValue = localStorage.getItem(legacyKey);
+    if (legacyValue === null) return;
+    if (localStorage.getItem(arcaneKey) === null) {
+      localStorage.setItem(arcaneKey, legacyValue);
+    }
+    localStorage.removeItem(legacyKey);
+  });
+
+  localStorage.removeItem(LEGACY_STORAGE_KEYS.discordConnected);
+}
+
 // Load current local states
 export function getSavedState() {
   if (typeof window === 'undefined') {
@@ -107,9 +151,11 @@ export function getSavedState() {
     };
   }
 
-  const storedCards = localStorage.getItem('ritual_tcg_cards');
-  const storedOffers = localStorage.getItem('ritual_tcg_offers');
-  const storedLogs = localStorage.getItem('ritual_tcg_logs');
+  migrateLegacyStorageKeys();
+
+  const storedCards = localStorage.getItem(STORAGE_KEYS.cards);
+  const storedOffers = localStorage.getItem(STORAGE_KEYS.offers);
+  const storedLogs = localStorage.getItem(STORAGE_KEYS.logs);
 
   let parsedCards: RitualCard[] = storedCards ? JSON.parse(storedCards) : INITIAL_PRESET_CARDS;
   let parsedOffers: CardOffer[] = storedOffers ? JSON.parse(storedOffers) : INITIAL_PRESET_OFFERS;
@@ -123,9 +169,9 @@ export function getSavedState() {
     cards: parsedCards,
     offers: parsedOffers.filter(o => !["o1", "o2"].includes(o.offerId)),
     logs: parsedLogs.filter(l => !["a1", "a2", "a3", "a4"].includes(l.id)),
-    walletConnected: localStorage.getItem('ritual_tcg_wallet_connected') === 'true',
-    walletAddress: localStorage.getItem('ritual_tcg_wallet_address') || "",
-    balance: parseFloat(localStorage.getItem('ritual_tcg_wallet_balance') || "100.0"),
+    walletConnected: localStorage.getItem(STORAGE_KEYS.walletConnected) === 'true',
+    walletAddress: localStorage.getItem(STORAGE_KEYS.walletAddress) || "",
+    balance: parseFloat(localStorage.getItem(STORAGE_KEYS.walletBalance) || "100.0"),
     discordConnected: false,
     discordUser: null
   };
@@ -133,13 +179,13 @@ export function getSavedState() {
 
 export function saveState(state: any) {
   if (typeof window === 'undefined') return;
-  localStorage.setItem('ritual_tcg_cards', JSON.stringify(state.cards));
-  localStorage.setItem('ritual_tcg_offers', JSON.stringify(state.offers));
-  localStorage.setItem('ritual_tcg_logs', JSON.stringify(state.logs));
-  localStorage.setItem('ritual_tcg_wallet_connected', String(state.walletConnected));
-  localStorage.setItem('ritual_tcg_wallet_address', state.walletAddress);
-  localStorage.setItem('ritual_tcg_wallet_balance', String(state.balance));
-  localStorage.setItem('ritual_tcg_discord_connected', "false");
-  localStorage.setItem('ritual_tcg_discord_user', "null");
+  migrateLegacyStorageKeys();
+  localStorage.setItem(STORAGE_KEYS.cards, JSON.stringify(state.cards));
+  localStorage.setItem(STORAGE_KEYS.offers, JSON.stringify(state.offers));
+  localStorage.setItem(STORAGE_KEYS.logs, JSON.stringify(state.logs));
+  localStorage.setItem(STORAGE_KEYS.walletConnected, String(state.walletConnected));
+  localStorage.setItem(STORAGE_KEYS.walletAddress, state.walletAddress);
+  localStorage.setItem(STORAGE_KEYS.walletBalance, String(state.balance));
+  localStorage.setItem(STORAGE_KEYS.discordUser, JSON.stringify(state.discordUser ?? null));
 }
 

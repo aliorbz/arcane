@@ -32,7 +32,7 @@ export const DISCORD_CONFIG = {
 
 export const MARKETPLACE_CONFIG = {
   listingFee: "0.01",
-  platformFeePercent: 5,
+  platformFeePercent: 2.5,
   feeReceiver: "0x0000000000000000000000000000000000000000",
 };
 
@@ -98,6 +98,7 @@ export const ROLE_COLORS = {
 };
 
 export const NFT_ABI = parseAbi([
+  "event ArtifactForged(uint256 indexed tokenId, address indexed owner, address indexed creator, string categoryId, string subclass, string name, string uri)",
   "function checkHasMinted(string discordId) public view returns (bool)",
   "function checkHasMintedRole(string discordId, string discordRole) public view returns (bool)",
   "function mintCard(address to, string discordId, string discordRole, string discordUsername) public payable returns (uint256)",
@@ -129,11 +130,11 @@ export const MARKETPLACE_ABI = parseAbi([
 
 export const CONTRACTS = {
   NFT: {
-    address: "0x3709CE39819fE72F6eF9d76E7196481219A995Db" as const,
+    address: "0x92A6b7fafe0ea654f95938a9Ca744EB73598a285" as const,
     abi: NFT_ABI,
   },
   MARKETPLACE: {
-    address: "0x2a3C8A880398FF6DD8e6F9976c8BE6C8aBef2435" as const,
+    address: "0xee2F5618F01dF8D4b35ade4E6c16822b1E090F6f" as const,
     abi: MARKETPLACE_ABI,
   },
 };

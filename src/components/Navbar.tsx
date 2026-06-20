@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Wallet, Sparkles, Gamepad2, User, LogOut, ChevronDown, PlusCircle, Bot, Moon, Sun } from 'lucide-react';
+import { Wallet, Sparkles, Gamepad2, User, LogOut, ChevronDown, PlusCircle, Bot } from 'lucide-react';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 
 interface NavbarProps {
@@ -15,8 +15,6 @@ interface NavbarProps {
   discordUser?: { name: string; avatar?: string } | null;
   profileTab?: "cards" | "forge";
   setProfileTab?: (tab: "cards" | "forge") => void;
-  theme: 'light' | 'dark';
-  toggleTheme: () => void;
 }
 
 export function Navbar({
@@ -30,12 +28,12 @@ export function Navbar({
   onTriggerFaucet,
   discordUser,
   profileTab = "cards",
-  setProfileTab,
-  theme,
-  toggleTheme
+  setProfileTab
 }: NavbarProps) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [isNetworkMenuOpen, setIsNetworkMenuOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const networkMenuRef = useRef<HTMLDivElement>(null);
 
   // Close profile menu dropdown on clicking outside
   useEffect(() => {
@@ -43,14 +41,17 @@ export function Navbar({
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setIsDropdownOpen(false);
       }
+      if (networkMenuRef.current && !networkMenuRef.current.contains(event.target as Node)) {
+        setIsNetworkMenuOpen(false);
+      }
     }
-    if (isDropdownOpen) {
+    if (isDropdownOpen || isNetworkMenuOpen) {
       document.addEventListener('mousedown', handleClickOutside);
     }
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [isDropdownOpen]);
+  }, [isDropdownOpen, isNetworkMenuOpen]);
 
   // Shorten address helper
   const shortAddress = walletAddress
@@ -67,9 +68,7 @@ export function Navbar({
           WebkitBackdropFilter: 'blur(6px) saturate(140%)',
           maskImage: 'linear-gradient(to bottom, rgba(0, 0, 0, 1) 0%, rgba(0, 0, 0, 0.85) 45%, rgba(0, 0, 0, 0) 100%)',
           WebkitMaskImage: 'linear-gradient(to bottom, rgba(0, 0, 0, 1) 0%, rgba(0, 0, 0, 0.85) 45%, rgba(0, 0, 0, 0) 100%)',
-          background: theme === 'dark' 
-            ? 'linear-gradient(to bottom, rgba(3,3,4,0.25) 0%, rgba(3,3,4,0.08) 50%, rgba(3,3,4,0) 100%)'
-            : 'linear-gradient(to bottom, rgba(255,255,255,0.25) 0%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0) 100%)',
+          background: 'linear-gradient(to bottom, rgba(3,3,4,0.25) 0%, rgba(3,3,4,0.08) 50%, rgba(3,3,4,0) 100%)',
         }}
       />
       <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
@@ -93,11 +92,7 @@ export function Navbar({
         </button>
 
         {/* View Selection Menu inside one single capsule structure */}
-        <div className={`flex items-center p-1 gap-1 relative rounded-full border shadow-sm transition-all duration-300 ${
-          theme === 'dark' 
-            ? 'bg-[#09090c]/40 border-white/5 backdrop-blur-md' 
-            : 'bg-white/50 border-slate-200/60 backdrop-blur-md shadow-inner'
-        }`}>
+        <div className="flex items-center p-1 gap-1 relative rounded-full border shadow-sm transition-all duration-300 bg-[#09090c]/40 border-white/5 backdrop-blur-md">
           {[
             { id: 'home', label: 'Home' },
             { id: 'marketplace', label: 'Market' },
@@ -110,20 +105,14 @@ export function Navbar({
                 key={tab.id}
                 onClick={() => setCurrentView(tab.id)}
                 className={`relative px-4 py-2 rounded-full text-[12px] font-normal uppercase tracking-[0.16em] transition-all duration-300 cursor-pointer focus:outline-none select-none ${
-                  isActive
-                    ? theme === 'dark' ? "text-cyan-400" : "text-cyan-600 font-semibold"
-                    : theme === 'dark' ? "text-white/40 hover:text-white" : "text-slate-500 hover:text-slate-900"
+                  isActive ? "text-cyan-400" : "text-white/40 hover:text-white"
                 }`}
                 style={{ fontFamily: 'Forum, "Forum", serif' }}
               >
                 {isActive && (
                   <motion.span
                     layoutId="active-nav-capsule"
-                    className={`absolute inset-0 rounded-full z-[-1] border shadow-sm ${
-                      theme === 'dark'
-                        ? "bg-white/10 border-white/10 shadow-[0_2px_8px_rgba(255,255,255,0.05)]"
-                        : "bg-slate-200/80 border-slate-300 shadow-[0_2px_8px_rgba(15,23,42,0.03)]"
-                    }`}
+                    className="absolute inset-0 rounded-full z-[-1] border shadow-sm bg-white/10 border-white/10 shadow-[0_2px_8px_rgba(255,255,255,0.05)]"
                     transition={{ type: "spring", stiffness: 350, damping: 30 }}
                   />
                 )}
@@ -139,6 +128,7 @@ export function Navbar({
             {({
               account,
               chain,
+              openChainModal,
               openAccountModal,
               openConnectModal,
               mounted,
@@ -171,13 +161,54 @@ export function Navbar({
 
               if (chain.unsupported) {
                 return (
-                  <button
-                    onClick={openAccountModal}
-                    type="button"
-                    className="px-4 py-2 text-xs font-black uppercase tracking-wider bg-red-600 hover:bg-red-500 text-white rounded-xl transition-all"
-                  >
-                    Wrong Network
-                  </button>
+                  <div ref={networkMenuRef} className="relative">
+                    <button
+                      onClick={() => setIsNetworkMenuOpen(!isNetworkMenuOpen)}
+                      type="button"
+                      className="px-4 py-2 text-xs font-black uppercase tracking-wider bg-red-600 hover:bg-red-500 text-white rounded-xl transition-all cursor-pointer"
+                    >
+                      Wrong Network
+                    </button>
+
+                    <AnimatePresence>
+                      {isNetworkMenuOpen && (
+                        <motion.div
+                          initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                          className="absolute right-0 top-full mt-2.5 w-72 glass-card rounded-2xl shadow-2xl overflow-hidden z-50 p-2 text-left duration-300"
+                          style={{ fontFamily: 'Forum, "Forum", serif' }}
+                        >
+                          <p className="px-3 py-2 text-[11px] leading-relaxed text-white/55">
+                            This wallet does not support Arc Testnet. Disconnect or use another wallet.
+                          </p>
+
+                          <button
+                            onClick={() => {
+                              setIsNetworkMenuOpen(false);
+                              openChainModal();
+                            }}
+                            type="button"
+                            className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs uppercase tracking-wider text-white/70 hover:text-white hover:bg-white/5 rounded-xl transition-all mt-0.5"
+                            style={{ fontFamily: 'Forum, "Forum", serif' }}
+                          >
+                            <Wallet size={15} /> Switch Network
+                          </button>
+
+                          <button
+                            onClick={() => {
+                              onDisconnectWallet();
+                              setIsNetworkMenuOpen(false);
+                            }}
+                            className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs uppercase tracking-wider text-red-400 hover:text-red-300 hover:bg-red-500/5 rounded-xl transition-all mt-1 border-t border-white/5 pt-3"
+                            style={{ fontFamily: 'Forum, "Forum", serif' }}
+                          >
+                            <LogOut size={15} /> Disconnect Wallet
+                          </button>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
                 );
               }
 

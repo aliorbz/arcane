@@ -7,10 +7,9 @@ import { ArcaneNFT } from '../types';
 interface HomeViewProps {
   setCurrentView: (view: string) => void;
   setSelectedCardId?: (id: string | null) => void;
-  theme?: 'light' | 'dark';
 }
 
-export function HomeView({ setCurrentView, setSelectedCardId, theme = 'dark' }: HomeViewProps) {
+export function HomeView({ setCurrentView, setSelectedCardId }: HomeViewProps) {
   const [state, setState] = useState(getSavedState());
 
   // Periodically synchronize local state
