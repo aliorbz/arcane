@@ -1,6 +1,6 @@
-import { createPublicClient, formatEther, http } from 'viem';
+import { createPublicClient, formatEther, http, parseAbiItem } from 'viem';
 import { RITUAL_NETWORK, CONTRACTS } from './config';
-import { CardOffer, RitualCard } from '../types';
+import { ArcaneAttribute, CardOffer, RitualCard } from '../types';
 
 export const publicClient = createPublicClient({
   chain: {
@@ -13,6 +13,85 @@ export const publicClient = createPublicClient({
   } as any,
   transport: http(),
 });
+
+const artifactForgedEvent = parseAbiItem(
+  "event ArtifactForged(uint256 indexed tokenId, address indexed owner, address indexed creator, string categoryId, string subclass, string name, string uri)"
+);
+
+type ArtifactForgedLog = {
+  args: {
+    tokenId?: bigint;
+    owner?: string;
+    creator?: string;
+    categoryId?: string;
+    subclass?: string;
+    name?: string;
+    uri?: string;
+  };
+  blockNumber?: bigint;
+};
+
+type TokenMetadata = {
+  name?: string;
+  description?: string;
+  image?: string;
+  image_url?: string;
+  animation_url?: string;
+  attributes?: ArcaneAttribute[];
+};
+
+async function fetchArtifactForgedLogs(): Promise<ArtifactForgedLog[]> {
+  try {
+    return await (publicClient as any).getLogs({
+      address: CONTRACTS.NFT.address as `0x${string}`,
+      event: artifactForgedEvent,
+      fromBlock: 0n,
+      toBlock: 'latest',
+    }) as ArtifactForgedLog[];
+  } catch (error: any) {
+    console.warn("[onchain] Could not read ArtifactForged logs for NFT discovery:", error.message || error);
+    return [];
+  }
+}
+
+async function readTokenURI(tokenId: bigint): Promise<string> {
+  try {
+    return await (publicClient as any).readContract({
+      address: CONTRACTS.NFT.address as `0x${string}`,
+      abi: CONTRACTS.NFT.abi,
+      functionName: 'tokenURI',
+      args: [tokenId],
+    }) as string;
+  } catch {
+    return "";
+  }
+}
+
+async function loadTokenMetadata(uri: string): Promise<TokenMetadata | null> {
+  if (!uri) return null;
+
+  try {
+    if (uri.startsWith("data:application/json;base64,")) {
+      const encoded = uri.replace("data:application/json;base64,", "");
+      return JSON.parse(atob(encoded)) as TokenMetadata;
+    }
+
+    if (uri.startsWith("data:application/json,")) {
+      const encoded = uri.replace("data:application/json,", "");
+      return JSON.parse(decodeURIComponent(encoded)) as TokenMetadata;
+    }
+
+    if (uri.startsWith("http://") || uri.startsWith("https://")) {
+      const response = await fetch(uri);
+      if (!response.ok) return null;
+      return await response.json() as TokenMetadata;
+    }
+  } catch (error) {
+    console.warn(`[onchain] Could not load token metadata from tokenURI:`, error);
+  }
+
+  return null;
+}
 
 export async function fetchOnchainCards(): Promise<RitualCard[]> {
   try {
@@ -30,28 +109,24 @@ export async function fetchOnchainCards(): Promise<RitualCard[]> {
       return [];
     }
 
-    let totalSupplyHex;
-    try {
-      totalSupplyHex = await (publicClient as any).readContract({
-        address: CONTRACTS.NFT.address as `0x${string}`,
-        abi: CONTRACTS.NFT.abi,
-        functionName: 'totalSupply',
-      });
-    } catch (contractErr: any) {
-      console.warn("[onchain] Failed to call totalSupply on NFT contract (possibly inactive or not deployed yet):", contractErr.message || contractErr);
-      return [];
+    const forgedLogs = await fetchArtifactForgedLogs();
+    const tokenEvents = new Map<string, ArtifactForgedLog>();
+    for (const log of forgedLogs) {
+      const tokenId = log.args?.tokenId;
+      if (tokenId === undefined) continue;
+      tokenEvents.set(tokenId.toString(), log);
     }
-    
-    const totalSupply = BigInt(totalSupplyHex as string | number | bigint);
+
     const cards: RitualCard[] = [];
-    const count = Number(totalSupply);
+    const discoveredTokenIds = Array.from(tokenEvents.keys())
+      .map(tokenId => BigInt(tokenId))
+      .sort((a, b) => Number(a - b));
 
-    if (count === 0) return [];
+    if (discoveredTokenIds.length === 0) return [];
 
-    // Query details for each tokenId in parallel (limit to 100 max for latency protection)
-    const promises = Array.from({ length: Math.min(count, 100) }, async (_, i) => {
-      const tokenId = BigInt(i + 1);
+    const promises = discoveredTokenIds.map(async (tokenId) => {
       const tokenIdStr = tokenId.toString();
+      const forgedLog = tokenEvents.get(tokenIdStr);
       try {
         const owner = await (publicClient as any).readContract({
           address: CONTRACTS.NFT.address as `0x${string}`,
@@ -68,6 +143,8 @@ export async function fetchOnchainCards(): Promise<RitualCard[]> {
         }) as [string, string, string];
 
         const [discordId, discordRole, discordUsername] = cardMeta;
+        const tokenURI = await readTokenURI(tokenId);
+        const tokenMetadata = await loadTokenMetadata(tokenURI);
 
         // Fetch active Listing Id on marketplace
         const listingIdHex = await (publicClient as any).readContract({
@@ -113,26 +190,33 @@ export async function fetchOnchainCards(): Promise<RitualCard[]> {
         };
 
         const imageUrl = sampleAvatars[category] || sampleAvatars.art;
+        const metadataImage = tokenMetadata?.image || tokenMetadata?.image_url || tokenMetadata?.animation_url || "";
+        const finalImageUrl = metadataImage || imageUrl;
+        const metadataAttributes = Array.isArray(tokenMetadata?.attributes) ? tokenMetadata.attributes.slice(0, 6) : [];
+        const eventName = forgedLog?.args?.name || "";
+        const eventCategoryId = forgedLog?.args?.categoryId || "";
+        const eventSubclass = forgedLog?.args?.subclass || "";
+        const eventCreator = forgedLog?.args?.creator || "";
 
         const card: RitualCard = {
           tokenId: tokenIdStr,
           owner: owner,
           isListed: isListed,
           price: price,
-          name: discordUsername || `Arcane Artifact #${tokenIdStr}`,
-          description: `Exclusive customized ARCANE NFT Artifact minted on-chain. Verified statefully on the Arc testnet network.`,
-          imageUrl: imageUrl,
+          name: tokenMetadata?.name || discordUsername || eventName || `Arcane Artifact #${tokenIdStr}`,
+          description: tokenMetadata?.description || `Exclusive customized ARCANE NFT Artifact minted on-chain. Verified statefully on the Arc testnet network.`,
+          imageUrl: finalImageUrl,
           mediaType: category === "video" ? "video" : category === "audio" ? "audio" : "image",
           listingId: activeListingIdStr || undefined,
           royaltyPercent: 5,
-          attributes: [],
-          creator: owner,
+          attributes: metadataAttributes,
+          creator: eventCreator || owner,
           createdAt: new Date(1716500000000 + Number(tokenId) * 86400000).toISOString(),
           // Kept for backwards compatibility with old components
-          discordId: discordId,
-          discordUsername: discordUsername || `Arcane Artifact #${tokenIdStr}`,
-          discordRole: category,
-          avatar: imageUrl,
+          discordId: discordId || eventCategoryId,
+          discordUsername: discordUsername || eventName || `Arcane Artifact #${tokenIdStr}`,
+          discordRole: category || eventSubclass,
+          avatar: finalImageUrl,
           traits: {
             messages: 100,
             level: 5,
