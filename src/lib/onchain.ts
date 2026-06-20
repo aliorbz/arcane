@@ -40,18 +40,72 @@ type TokenMetadata = {
   attributes?: ArcaneAttribute[];
 };
 
-async function fetchArtifactForgedLogs(): Promise<ArtifactForgedLog[]> {
+const LOG_CHUNK_SIZE = 10_000n;
+const LOG_CHUNK_DELAY_MS = 150;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => window.setTimeout(resolve, ms));
+}
+
+async function getNftDiscoveryStartBlock(): Promise<bigint | null> {
+  if (CONTRACTS.NFT.deploymentBlock !== undefined) {
+    return BigInt(CONTRACTS.NFT.deploymentBlock);
+  }
+
   try {
-    return await (publicClient as any).getLogs({
-      address: CONTRACTS.NFT.address as `0x${string}`,
-      event: artifactForgedEvent,
-      fromBlock: 0n,
-      toBlock: 'latest',
-    }) as ArtifactForgedLog[];
+    const receipt = await (publicClient as any).getTransactionReceipt({
+      hash: CONTRACTS.NFT.deploymentTx,
+    });
+    if (receipt?.blockNumber !== undefined) {
+      return BigInt(receipt.blockNumber);
+    }
   } catch (error: any) {
-    console.warn("[onchain] Could not read ArtifactForged logs for NFT discovery:", error.message || error);
+    console.warn("[onchain] Could not resolve NFT deployment block from deployment tx:", error.message || error);
+  }
+
+  return null;
+}
+
+async function fetchArtifactForgedLogs(): Promise<ArtifactForgedLog[]> {
+  const logs: ArtifactForgedLog[] = [];
+  const latestBlock = await (publicClient as any).getBlockNumber() as bigint;
+  const startBlock = await getNftDiscoveryStartBlock();
+  if (startBlock === null) {
+    console.warn("[onchain] NFT discovery skipped because deployment block could not be resolved.");
     return [];
   }
+
+  let scannedFrom = startBlock;
+  let failedChunks = 0;
+
+  while (scannedFrom <= latestBlock) {
+    const scannedTo = scannedFrom + LOG_CHUNK_SIZE - 1n > latestBlock
+      ? latestBlock
+      : scannedFrom + LOG_CHUNK_SIZE - 1n;
+
+    try {
+      const chunk = await (publicClient as any).getLogs({
+        address: CONTRACTS.NFT.address as `0x${string}`,
+        event: artifactForgedEvent,
+        fromBlock: scannedFrom,
+        toBlock: scannedTo,
+      }) as ArtifactForgedLog[];
+      logs.push(...chunk);
+    } catch (error: any) {
+      failedChunks += 1;
+      console.warn(`[onchain] ArtifactForged log chunk failed for blocks ${scannedFrom}-${scannedTo}:`, error.message || error);
+    }
+
+    scannedFrom = scannedTo + 1n;
+    if (scannedFrom <= latestBlock) {
+      await sleep(LOG_CHUNK_DELAY_MS);
+    }
+  }
+
+  const tokenIds = new Set(logs.flatMap(log => log.args?.tokenId === undefined ? [] : [log.args.tokenId.toString()]));
+  console.info(`[onchain] NFT discovery scanned blocks ${startBlock.toString()}-${latestBlock.toString()} in ${LOG_CHUNK_SIZE.toString()} block chunks. Logs: ${logs.length}. Token IDs: ${Array.from(tokenIds).join(", ") || "none"}. Failed chunks: ${failedChunks}.`);
+
+  return logs;
 }
 
 async function readTokenURI(tokenId: bigint): Promise<string> {

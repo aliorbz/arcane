@@ -129,6 +129,8 @@ export const MARKETPLACE_ABI = parseAbi([
 export const CONTRACTS = {
   NFT: {
     address: "0x92A6b7fafe0ea654f95938a9Ca744EB73598a285" as const,
+    deploymentTx: "0xdab64c74be869246e0e57c2f0f1ce0e9704861af7ef585cd2be7a4d3fbee31db" as const,
+    deploymentBlock: undefined as number | undefined,
     abi: NFT_ABI,
   },
   MARKETPLACE: {

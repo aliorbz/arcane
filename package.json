@@ -14,7 +14,8 @@
     "contracts:deploy:arc": "hardhat run scripts/deploy.ts --network arcTestnet --config hardhat.config.cjs",
     "contracts:deploy-marketplace:arc": "set MARKETPLACE_ONLY=true&& set NFT_ADDRESS=0x92A6b7fafe0ea654f95938a9Ca744EB73598a285&& hardhat run scripts/deploy.ts --network arcTestnet --config hardhat.config.cjs",
     "contracts:check:arc": "hardhat run scripts/check-deploy.ts --network arcTestnet --config hardhat.config.cjs",
-    "contracts:debug-accept": "hardhat run scripts/debug-accept-offer.ts --network arcTestnet --config hardhat.config.cjs"
+    "contracts:debug-accept": "hardhat run scripts/debug-accept-offer.ts --network arcTestnet --config hardhat.config.cjs",
+    "contracts:debug-nfts": "hardhat run scripts/debug-nft-discovery.ts --network arcTestnet --config hardhat.config.cjs"
   },
   "dependencies": {
     "@google/genai": "^2.7.0",
