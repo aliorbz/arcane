@@ -244,8 +244,8 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
   const refreshCardFromOnchain = async () => {
     if (!card) return undefined;
 
-    const refreshedOnchainCards = await fetchOnchainCards();
-    const refreshedCard = refreshedOnchainCards.find(c => c.tokenId === card.tokenId);
+    const refreshedOnchainResult = await fetchOnchainCards();
+    const refreshedCard = refreshedOnchainResult.cards.find(c => c.tokenId === card.tokenId);
     if (!refreshedCard) return undefined;
 
     patchCardInLatestState(card.tokenId, {
@@ -583,8 +583,8 @@ export function CardDetailsView({ cardId, setCurrentView, setSelectedCardId }: C
         if (buyReceipt.status !== "success") {
           throw new Error("Buy transaction failed onchain.");
         }
-        const refreshedOnchainCards = await fetchOnchainCards();
-        refreshedCard = refreshedOnchainCards.find(c => c.tokenId === card.tokenId);
+        const refreshedOnchainResult = await fetchOnchainCards();
+        refreshedCard = refreshedOnchainResult.cards.find(c => c.tokenId === card.tokenId);
       }
 
       const latestState = getSavedState();

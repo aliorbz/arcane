@@ -40,11 +40,44 @@ type TokenMetadata = {
   attributes?: ArcaneAttribute[];
 };
 
+export type OnchainCardsResult = {
+  cards: RitualCard[];
+  complete: boolean;
+  failedChunks: number;
+  discoveredTokenIds: number;
+};
+
 const LOG_CHUNK_SIZE = 10_000n;
 const LOG_CHUNK_DELAY_MS = 150;
+const DISCOVERED_TOKEN_IDS_CACHE_KEY = "arcane_discovered_token_ids";
+let discoveryRefreshInFlight: Promise<void> | null = null;
 
 function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => window.setTimeout(resolve, ms));
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function getCachedDiscoveredTokenIds(): string[] {
+  if (typeof window === "undefined") return [];
+
+  try {
+    const value = localStorage.getItem(DISCOVERED_TOKEN_IDS_CACHE_KEY);
+    if (!value) return [];
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map(tokenId => String(tokenId))
+      .filter(tokenId => /^\d+$/.test(tokenId));
+  } catch {
+    return [];
+  }
+}
+
+function cacheDiscoveredTokenIds(tokenIds: string[]) {
+  if (typeof window === "undefined") return;
+
+  const uniqueTokenIds = Array.from(new Set(tokenIds.filter(tokenId => /^\d+$/.test(tokenId))))
+    .sort((a, b) => Number(BigInt(a) - BigInt(b)));
+  localStorage.setItem(DISCOVERED_TOKEN_IDS_CACHE_KEY, JSON.stringify(uniqueTokenIds));
 }
 
 async function getNftDiscoveryStartBlock(): Promise<bigint | null> {
@@ -66,13 +99,18 @@ async function getNftDiscoveryStartBlock(): Promise<bigint | null> {
   return null;
 }
 
-async function fetchArtifactForgedLogs(): Promise<ArtifactForgedLog[]> {
+async function fetchArtifactForgedLogs(): Promise<{
+  logs: ArtifactForgedLog[];
+  complete: boolean;
+  failedChunks: number;
+  tokenIds: string[];
+}> {
   const logs: ArtifactForgedLog[] = [];
   const latestBlock = await (publicClient as any).getBlockNumber() as bigint;
   const startBlock = await getNftDiscoveryStartBlock();
   if (startBlock === null) {
     console.warn("[onchain] NFT discovery skipped because deployment block could not be resolved.");
-    return [];
+    return { logs: [], complete: false, failedChunks: 1, tokenIds: [] };
   }
 
   let scannedFrom = startBlock;
@@ -105,7 +143,33 @@ async function fetchArtifactForgedLogs(): Promise<ArtifactForgedLog[]> {
   const tokenIds = new Set(logs.flatMap(log => log.args?.tokenId === undefined ? [] : [log.args.tokenId.toString()]));
   console.info(`[onchain] NFT discovery scanned blocks ${startBlock.toString()}-${latestBlock.toString()} in ${LOG_CHUNK_SIZE.toString()} block chunks. Logs: ${logs.length}. Token IDs: ${Array.from(tokenIds).join(", ") || "none"}. Failed chunks: ${failedChunks}.`);
 
-  return logs;
+  return {
+    logs,
+    complete: failedChunks === 0,
+    failedChunks,
+    tokenIds: Array.from(tokenIds)
+  };
+}
+
+function refreshDiscoveredTokenIdCache() {
+  if (discoveryRefreshInFlight) return;
+
+  discoveryRefreshInFlight = fetchArtifactForgedLogs()
+    .then(result => {
+      if (result.tokenIds.length > 0) {
+        const mergedTokenIds = Array.from(new Set([
+          ...getCachedDiscoveredTokenIds(),
+          ...result.tokenIds
+        ]));
+        cacheDiscoveredTokenIds(mergedTokenIds);
+      }
+    })
+    .catch((error: any) => {
+      console.warn("[onchain] Background NFT discovery refresh failed:", error.message || error);
+    })
+    .finally(() => {
+      discoveryRefreshInFlight = null;
+    });
 }
 
 async function readTokenURI(tokenId: bigint): Promise<string> {
@@ -147,7 +211,7 @@ async function loadTokenMetadata(uri: string): Promise<TokenMetadata | null> {
   return null;
 }
 
-export async function fetchOnchainCards(): Promise<RitualCard[]> {
+export async function fetchOnchainCards(): Promise<OnchainCardsResult> {
   try {
     // Gracefully verify if the contract is active on the connected network
     try {
@@ -156,14 +220,23 @@ export async function fetchOnchainCards(): Promise<RitualCard[]> {
       });
       if (!bytecode || bytecode === '0x') {
         console.warn(`[onchain] NFT Contract is not deployed or inactive at address ${CONTRACTS.NFT.address}`);
-        return [];
+        return { cards: [], complete: false, failedChunks: 1, discoveredTokenIds: 0 };
       }
     } catch (err: any) {
       console.warn("[onchain] Could not fetch contract bytecode. RPC or contract is unreachable:", err.message || err);
-      return [];
+      return { cards: [], complete: false, failedChunks: 1, discoveredTokenIds: 0 };
     }
 
-    const forgedLogs = await fetchArtifactForgedLogs();
+    const cachedTokenIds = getCachedDiscoveredTokenIds();
+    const discoveryResult = cachedTokenIds.length > 0
+      ? { logs: [] as ArtifactForgedLog[], complete: true, failedChunks: 0, tokenIds: cachedTokenIds }
+      : await fetchArtifactForgedLogs();
+
+    if (cachedTokenIds.length > 0) {
+      refreshDiscoveredTokenIdCache();
+    }
+
+    const forgedLogs = discoveryResult.logs;
     const tokenEvents = new Map<string, ArtifactForgedLog>();
     for (const log of forgedLogs) {
       const tokenId = log.args?.tokenId;
@@ -172,12 +245,23 @@ export async function fetchOnchainCards(): Promise<RitualCard[]> {
     }
 
     const cards: RitualCard[] = [];
-    const discoveredTokenIds = Array.from(tokenEvents.keys())
+    const discoveredTokenIds = Array.from(new Set([
+      ...discoveryResult.tokenIds,
+      ...Array.from(tokenEvents.keys())
+    ]))
       .map(tokenId => BigInt(tokenId))
       .sort((a, b) => Number(a - b));
 
-    if (discoveredTokenIds.length === 0) return [];
+    if (discoveredTokenIds.length === 0) {
+      return {
+        cards: [],
+        complete: discoveryResult.complete,
+        failedChunks: discoveryResult.failedChunks,
+        discoveredTokenIds: 0
+      };
+    }
 
+    let tokenReadFailures = 0;
     const promises = discoveredTokenIds.map(async (tokenId) => {
       const tokenIdStr = tokenId.toString();
       const forgedLog = tokenEvents.get(tokenIdStr);
@@ -281,15 +365,26 @@ export async function fetchOnchainCards(): Promise<RitualCard[]> {
 
         cards.push(card);
       } catch (err) {
+        tokenReadFailures += 1;
         console.warn(`Error compiling details for tokenId ${tokenId}`, err);
       }
     });
 
     await Promise.all(promises);
-    return cards.sort((a,b) => parseInt(b.tokenId) - parseInt(a.tokenId));
+    const sortedCards = cards.sort((a,b) => parseInt(b.tokenId) - parseInt(a.tokenId));
+    if (sortedCards.length > 0) {
+      cacheDiscoveredTokenIds(sortedCards.map(card => card.tokenId));
+    }
+
+    return {
+      cards: sortedCards,
+      complete: discoveryResult.complete && tokenReadFailures === 0,
+      failedChunks: discoveryResult.failedChunks,
+      discoveredTokenIds: discoveredTokenIds.length
+    };
   } catch (error: any) {
     console.warn("[onchain] fetchOnchainCards bypassed:", error.message || error);
-    return [];
+    return { cards: [], complete: false, failedChunks: 1, discoveredTokenIds: 0 };
   }
 }
 

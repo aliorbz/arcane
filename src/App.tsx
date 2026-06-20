@@ -28,6 +28,7 @@ export default function App() {
 
   // Core wallet and mock storage states
   const [session, setSession] = useState(getSavedState());
+  const [onchainRefreshWarning, setOnchainRefreshWarning] = useState<string | null>(null);
 
   // Synchronise RainbowKit connection updates with local storage session nicely
   useEffect(() => {
@@ -101,7 +102,8 @@ export default function App() {
   // Background poller for live block contract reads
   useEffect(() => {
     async function loadOnchain() {
-      const onchainCards = await fetchOnchainCards();
+      const onchainResult = await fetchOnchainCards();
+      const onchainCards = onchainResult.cards;
       const currentState = getSavedState();
       const checkedLocalCards = await flagInvalidLocalCards(currentState.cards, onchainCards);
       const localCardsChanged = checkedLocalCards.some((card, index) =>
@@ -111,6 +113,52 @@ export default function App() {
         card.price !== currentState.cards[index]?.price ||
         card.listingId !== currentState.cards[index]?.listingId
       );
+
+      const currentOnchainCards = currentState.cards.filter(card =>
+        /^\d+$/.test(card.tokenId) && !card.localOnly && !card.invalidOnchain
+      );
+      const partialRefreshShrankCards = !onchainResult.complete && onchainCards.length < currentOnchainCards.length;
+      const refreshWarning = "Some onchain data could not refresh. Showing last known state.";
+
+      if (partialRefreshShrankCards) {
+        setOnchainRefreshWarning(refreshWarning);
+        if (onchainCards.length > 0) {
+          setSession(prev => {
+            const incomingByTokenId = new Map(onchainCards.map(card => [card.tokenId, card]));
+            const updatedCards = prev.cards.map(card => {
+              const onchainCard = incomingByTokenId.get(card.tokenId);
+              if (!onchainCard) return card;
+
+              return {
+                ...card,
+                ...onchainCard,
+                name: card.name || onchainCard.name,
+                description: card.description || onchainCard.description,
+                imageUrl: card.imageUrl || onchainCard.imageUrl,
+                mediaType: card.mediaType || onchainCard.mediaType,
+                royaltyPercent: card.royaltyPercent ?? onchainCard.royaltyPercent,
+                attributes: (card.attributes || onchainCard.attributes || []).slice(0, 6),
+                creator: card.creator || onchainCard.creator,
+                createdAt: card.createdAt || onchainCard.createdAt,
+                discordId: card.discordId || onchainCard.discordId,
+                discordUsername: card.discordUsername || onchainCard.discordUsername,
+                discordRole: card.discordRole || onchainCard.discordRole,
+                avatar: card.avatar || onchainCard.avatar,
+                traits: card.traits || onchainCard.traits,
+              };
+            });
+            const updated = {
+              ...prev,
+              cards: updatedCards
+            };
+            saveState(updated);
+            return updated;
+          });
+        }
+        return;
+      }
+
+      setOnchainRefreshWarning(onchainResult.complete ? null : refreshWarning);
 
       if (onchainCards.length > 0 || localCardsChanged) {
         setSession(prev => {
@@ -190,6 +238,11 @@ export default function App() {
 
       {/* Primary Dynamic Route View container */}
       <div className="transition-all duration-300 relative z-10">
+        {onchainRefreshWarning && (
+          <div className="fixed top-24 right-4 z-50 max-w-sm rounded-lg border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100 shadow-lg shadow-black/20 backdrop-blur">
+            {onchainRefreshWarning}
+          </div>
+        )}
         {currentView === 'home' && (
           <HomeView
             setCurrentView={setCurrentView}
