@@ -234,6 +234,8 @@ contract ArcaneMarketplace is ReentrancyGuard, Ownable {
         (uint256 marketplaceFee, address royaltyReceiver, uint256 creatorRoyalty, uint256 sellerProceeds) =
             _calculatePayouts(nftAddress, tokenId, offerAmount, msg.sender);
 
+        nft.safeTransferFrom(msg.sender, offerer, tokenId);
+
         _payout(msg.sender, sellerProceeds);
         if (creatorRoyalty > 0) {
             _payout(royaltyReceiver, creatorRoyalty);
@@ -241,8 +243,6 @@ contract ArcaneMarketplace is ReentrancyGuard, Ownable {
         if (marketplaceFee > 0) {
             _payout(feeReceiver, marketplaceFee);
         }
-
-        nft.safeTransferFrom(msg.sender, offerer, tokenId);
 
         emit OfferAccepted(
             nftAddress,

@@ -1,6 +1,6 @@
-import { createPublicClient, http } from 'viem';
+import { createPublicClient, formatEther, http } from 'viem';
 import { RITUAL_NETWORK, CONTRACTS } from './config';
-import { RitualCard } from '../types';
+import { CardOffer, RitualCard } from '../types';
 
 export const publicClient = createPublicClient({
   chain: {
@@ -151,6 +151,58 @@ export async function fetchOnchainCards(): Promise<RitualCard[]> {
     return cards.sort((a,b) => parseInt(b.tokenId) - parseInt(a.tokenId));
   } catch (error: any) {
     console.warn("[onchain] fetchOnchainCards bypassed:", error.message || error);
+    return [];
+  }
+}
+
+export async function fetchOnchainOffers(
+  nftAddress: `0x${string}`,
+  tokenId: string
+): Promise<CardOffer[]> {
+  if (!/^\d+$/.test(tokenId)) return [];
+
+  try {
+    const tokenIdBigInt = BigInt(tokenId);
+    const offerers = await (publicClient as any).readContract({
+      address: CONTRACTS.MARKETPLACE.address as `0x${string}`,
+      abi: CONTRACTS.MARKETPLACE.abi,
+      functionName: 'getOfferers',
+      args: [nftAddress, tokenIdBigInt],
+    }) as `0x${string}`[];
+
+    const uniqueOfferers = Array.from(new Set(offerers.map(offerer => offerer.toLowerCase()))) as `0x${string}`[];
+
+    const offers = await Promise.all(
+      uniqueOfferers.map(async offererAddress => {
+        const offer = await (publicClient as any).readContract({
+          address: CONTRACTS.MARKETPLACE.address as `0x${string}`,
+          abi: CONTRACTS.MARKETPLACE.abi,
+          functionName: 'offers',
+          args: [nftAddress, tokenIdBigInt, offererAddress],
+        }) as [`0x${string}`, bigint, boolean];
+
+        const [offerer, amount, active] = offer;
+        if (!active || amount <= 0n) return null;
+
+        const cardOffer: CardOffer = {
+          offerId: `${tokenId}_${offerer.toLowerCase()}`,
+          tokenId,
+          offerer,
+          offererName: `${offerer.substring(0, 6)}...${offerer.substring(offerer.length - 4)}`,
+          amount: Number(formatEther(amount)),
+          active,
+          createdAt: "",
+        };
+
+        return cardOffer;
+      })
+    );
+
+    return offers
+      .filter((offer): offer is CardOffer => offer !== null)
+      .sort((a, b) => b.amount - a.amount);
+  } catch (error: any) {
+    console.warn(`[onchain] fetchOnchainOffers bypassed for tokenId ${tokenId}:`, error.message || error);
     return [];
   }
 }

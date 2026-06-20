@@ -116,8 +116,8 @@ export function CreateView({ setCurrentView, setSelectedCardId }: CreateViewProp
     e.preventDefault();
     const activeState = getSavedState();
 
-    if (!activeState.walletConnected || !activeState.walletAddress) {
-      showNotification("⚠️ Please connect your Web3 wallet first!");
+    if (!isConnected || !activeState.walletConnected || !activeState.walletAddress) {
+      showNotification("Connect wallet to mint onchain.");
       return;
     }
 
@@ -231,37 +231,6 @@ export function CreateView({ setCurrentView, setSelectedCardId }: CreateViewProp
       return;
     }
 
-    // fallback simulation
-    setTimeout(() => {
-      setMintStatus("✍🏼 Adding cryptographic cryptographic certificate signature...");
-      setTimeout(() => {
-        const newLog: ActivityLog = {
-          id: "log_" + Date.now(),
-          tokenId: nextId,
-          type: "mint",
-          fromAddress: "0x0000000000000000000000000000000000000000",
-          toAddress: activeState.walletAddress,
-          amount: mintFee,
-          timestamp: new Date().toISOString()
-        };
-
-        const updatedState = {
-          ...activeState,
-          cards: [newNftItem, ...activeState.cards],
-          balance: parseFloat((activeState.balance - mintFee).toFixed(4)),
-          logs: [newLog, ...activeState.logs]
-        };
-
-        setState(updatedState);
-        saveState(updatedState);
-        setIsMinting(false);
-        setMintStatus("");
-        showNotification(`🎉 Web3 simulation: NFT minted successfully as Token #${nextId}!`);
-        setTimeout(() => {
-          setCurrentView('profile');
-        }, 1500);
-      }, 1000);
-    }, 1200);
   };
 
   return (

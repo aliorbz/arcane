@@ -8,7 +8,6 @@ import { CardDetailsView } from './components/CardDetailsView';
 import { CreateView } from './components/CreateView';
 import { ChatAIView } from './components/ChatAIView';
 import { getSavedState, saveState, ROLE_CONFIGS } from './lib/mockData';
-import { ActivityLog } from './types';
 import { RITUAL_NETWORK } from './lib/config';
 import { fetchOnchainCards, flagInvalidLocalCards } from './lib/onchain';
 
@@ -29,10 +28,6 @@ export default function App() {
 
   // Core wallet and mock storage states
   const [session, setSession] = useState(getSavedState());
-
-  const showNotification = (msg: string) => {
-    console.log("[Notification]", msg);
-  };
 
   // Synchronise RainbowKit connection updates with local storage session nicely
   useEffect(() => {
@@ -68,11 +63,11 @@ export default function App() {
 
   // Connect wallet manual fallback / handler triggers
   const handleConnectWallet = (realAddress?: string) => {
-    const finalAddress = realAddress || "0x78FA" + Math.random().toString(16).substring(2, 10).toUpperCase() + "e995";
+    if (!realAddress) return;
     const updated = {
       ...session,
       walletConnected: true,
-      walletAddress: finalAddress,
+      walletAddress: realAddress,
       balance: balanceData ? parseFloat((Number(balanceData.value) / 10 ** balanceData.decimals).toFixed(4)) : 1.5,
       discordUser: session.discordUser || { name: "Arcane_Arbiter" }
     };
@@ -141,9 +136,8 @@ export default function App() {
               traits: localCard.traits || onchainCard.traits,
             };
           });
-          const nonOverlapMocks = checkedLocalCards.filter(mc => !onchainCards.some(oc => oc.tokenId === mc.tokenId));
-          // Merge to keep simulated state and real state perfectly aligned
-          const merged = [...enrichedOnchainCards, ...nonOverlapMocks];
+          // Local storage may enrich metadata only. Ownership/listing presence comes from onchain cards.
+          const merged = enrichedOnchainCards;
           const updated = {
             ...prev,
             cards: merged

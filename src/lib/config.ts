@@ -32,7 +32,7 @@ export const DISCORD_CONFIG = {
 
 export const MARKETPLACE_CONFIG = {
   listingFee: "0.01",
-  platformFeePercent: 5,
+  platformFeePercent: 2.5,
   feeReceiver: "0x0000000000000000000000000000000000000000",
 };
 
@@ -134,7 +134,7 @@ export const CONTRACTS = {
     abi: NFT_ABI,
   },
   MARKETPLACE: {
-    address: "0x4da062529A9859F8F6E7e6e2718452bBB2121020" as const,
+    address: "0xee2F5618F01dF8D4b35ade4E6c16822b1E090F6f" as const,
     abi: MARKETPLACE_ABI,
   },
 };
