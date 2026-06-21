@@ -56,6 +56,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function resolveIpfsUri(uri: string): string {
+  if (!uri.startsWith("ipfs://")) return uri;
+  return `https://gateway.pinata.cloud/ipfs/${uri.replace("ipfs://", "")}`;
+}
+
 function getCachedDiscoveredTokenIds(): string[] {
   if (typeof window === "undefined") return [];
 
@@ -189,6 +194,8 @@ async function loadTokenMetadata(uri: string): Promise<TokenMetadata | null> {
   if (!uri) return null;
 
   try {
+    const resolvedUri = resolveIpfsUri(uri);
+
     if (uri.startsWith("data:application/json;base64,")) {
       const encoded = uri.replace("data:application/json;base64,", "");
       return JSON.parse(atob(encoded)) as TokenMetadata;
@@ -199,8 +206,8 @@ async function loadTokenMetadata(uri: string): Promise<TokenMetadata | null> {
       return JSON.parse(decodeURIComponent(encoded)) as TokenMetadata;
     }
 
-    if (uri.startsWith("http://") || uri.startsWith("https://")) {
-      const response = await fetch(uri);
+    if (resolvedUri.startsWith("http://") || resolvedUri.startsWith("https://")) {
+      const response = await fetch(resolvedUri);
       if (!response.ok) return null;
       return await response.json() as TokenMetadata;
     }
@@ -329,7 +336,8 @@ export async function fetchOnchainCards(): Promise<OnchainCardsResult> {
 
         const imageUrl = sampleAvatars[category] || sampleAvatars.art;
         const metadataImage = tokenMetadata?.image || tokenMetadata?.image_url || tokenMetadata?.animation_url || "";
-        const finalImageUrl = metadataImage || imageUrl;
+        const resolvedMetadataImage = metadataImage ? resolveIpfsUri(metadataImage) : "";
+        const finalImageUrl = resolvedMetadataImage || imageUrl;
         const metadataAttributes = Array.isArray(tokenMetadata?.attributes) ? tokenMetadata.attributes.slice(0, 6) : [];
         const eventName = forgedLog?.args?.name || "";
         const eventCategoryId = forgedLog?.args?.categoryId || "";

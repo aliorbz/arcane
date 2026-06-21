@@ -102,6 +102,7 @@ export const NFT_ABI = parseAbi([
   "function checkHasMinted(string discordId) public view returns (bool)",
   "function checkHasMintedRole(string discordId, string discordRole) public view returns (bool)",
   "function mintCard(address to, string discordId, string discordRole, string discordUsername) public payable returns (uint256)",
+  "function mintCardWithURI(address to, string discordId, string discordRole, string discordUsername, string uri) public payable returns (uint256)",
   "function updateCardData(uint256 tokenId, string discordRole, string discordUsername) public",
   "function ownerOf(uint256 tokenId) public view returns (address)",
   "function balanceOf(address owner) public view returns (uint256)",

@@ -15,6 +15,13 @@ interface CreateViewProps {
 
 const MAX_ATTRIBUTES = 6;
 
+type MetadataUploadResponse = {
+  metadataURI: string;
+  metadataGatewayURL: string;
+  imageURI: string;
+  imageGatewayURL: string;
+};
+
 function extractMintedTokenId(receipt: any): string | null {
   for (const log of receipt.logs || []) {
     if (log.address?.toLowerCase() !== CONTRACTS.NFT.address.toLowerCase()) continue;
@@ -112,6 +119,32 @@ export function CreateView({ setCurrentView, setSelectedCardId }: CreateViewProp
     setAttributes(attributes.filter((_, i) => i !== idx));
   };
 
+  const uploadNftMetadata = async (
+    file: File,
+    savedAttributes: ArcaneAttribute[]
+  ): Promise<MetadataUploadResponse> => {
+    const formData = new FormData();
+    formData.append("image", file);
+    formData.append("name", nftName.trim());
+    formData.append("description", nftDescription.trim() || "A beautiful digital asset minted on ARCANE Studio.");
+    formData.append("attributes", JSON.stringify(savedAttributes));
+    formData.append("external_url", externalLink.trim());
+    formData.append("category", customCategory);
+    formData.append("media_type", mediaType);
+
+    const response = await fetch("/api/metadata/upload", {
+      method: "POST",
+      body: formData,
+    });
+
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.error || "Metadata upload failed.");
+    }
+
+    return result as MetadataUploadResponse;
+  };
+
   const handleMintNFT = async (e: React.FormEvent) => {
     e.preventDefault();
     const activeState = getSavedState();
@@ -126,6 +159,16 @@ export function CreateView({ setCurrentView, setSelectedCardId }: CreateViewProp
       return;
     }
 
+    if (!mediaFile) {
+      showNotification("Please upload an image before minting.");
+      return;
+    }
+
+    if (!mediaFile.type.startsWith("image/")) {
+      showNotification("Production metadata currently requires an image file.");
+      return;
+    }
+
     const mintFee = 0.01;
     if (activeState.balance < mintFee) {
       showNotification("❌ Insufficient gas balance to cover minting fee. Please use the Faucet!");
@@ -133,49 +176,54 @@ export function CreateView({ setCurrentView, setSelectedCardId }: CreateViewProp
     }
 
     setIsMinting(true);
-    setMintStatus("🔬 Storing metadata and publishing asset configurations...");
-
-    const finalImageToUse = mediaDataUrl || "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=600&auto=format&fit=crop";
+    setMintStatus("Uploading image...");
 
     // Create item token structure
     const nextId = (activeState.cards.length > 0 ? Math.max(...activeState.cards.map(c => parseInt(c.tokenId) || 0)) + 1 : 121).toString();
     const mappedMediaType = mediaType === "3d" ? "image" : mediaType; // Type fallback for mediaType
     const savedAttributes = attributes.slice(0, MAX_ATTRIBUTES);
-    const newNftItem: ArcaneNFT = {
-      tokenId: nextId,
-      owner: activeState.walletAddress,
-      isListed: false,
-      name: nftName,
-      description: nftDescription || "A beautiful digital asset minted on ARCANE Studio.",
-      imageUrl: finalImageToUse,
-      mediaType: mappedMediaType as any,
-      royaltyPercent: parseFloat(royaltyPercentage) || 0,
-      attributes: savedAttributes,
-      creator: activeState.walletAddress,
-      createdAt: new Date().toISOString(),
-      discordId: "usr_" + Date.now().toString().substring(5),
-      discordUsername: activeState.discordUser?.name || "Arcane_Member",
-      discordRole: customCategory, // dynamically selected category
-      avatar: finalImageToUse
-    };
 
     if (isConnected) {
-      setMintStatus("📜 Awaiting core transaction approval in Web3 wallet...");
       try {
+        setMintStatus("Uploading image...");
+        const metadataUpload = await uploadNftMetadata(mediaFile, savedAttributes);
+        setMintStatus("Creating metadata...");
+
+        const finalImageToUse = metadataUpload.imageGatewayURL;
+        const newNftItem: ArcaneNFT = {
+          tokenId: nextId,
+          owner: activeState.walletAddress,
+          isListed: false,
+          name: nftName,
+          description: nftDescription || "A beautiful digital asset minted on ARCANE Studio.",
+          imageUrl: finalImageToUse,
+          mediaType: mappedMediaType as any,
+          royaltyPercent: parseFloat(royaltyPercentage) || 0,
+          attributes: savedAttributes,
+          creator: activeState.walletAddress,
+          createdAt: new Date().toISOString(),
+          discordId: "usr_" + Date.now().toString().substring(5),
+          discordUsername: activeState.discordUser?.name || "Arcane_Member",
+          discordRole: customCategory,
+          avatar: finalImageToUse
+        };
+
+        setMintStatus("Minting NFT...");
         const txHash = await writeContractAsync({
           address: CONTRACTS.NFT.address as `0x${string}`,
           abi: CONTRACTS.NFT.abi,
-          functionName: 'mintCard',
+          functionName: 'mintCardWithURI',
           args: [
             activeState.walletAddress as `0x${string}`,
             "usr_" + Date.now().toString().substring(5),
             customCategory,
             nftName,
+            metadataUpload.metadataURI,
           ],
           value: parseEther('0.01'),
         } as any);
 
-        setMintStatus("⚡ Minting complete! Waiting for ledger confirmation...");
+        setMintStatus("Minting NFT...");
 
         const mintReceipt = await (publicClient as any).waitForTransactionReceipt({ hash: txHash });
         if (mintReceipt.status !== "success") {
@@ -214,6 +262,7 @@ export function CreateView({ setCurrentView, setSelectedCardId }: CreateViewProp
 
         setState(updatedState);
         saveState(updatedState);
+        setMintStatus("Mint complete");
 
         showNotification(`🎉 On-Chain Minting succeeded! Tx Hash: ${txHash.substring(0, 10)}...`);
         // redirect to profile
