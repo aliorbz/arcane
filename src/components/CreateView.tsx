@@ -137,9 +137,14 @@ export function CreateView({ setCurrentView, setSelectedCardId }: CreateViewProp
       body: formData,
     });
 
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) {
+      throw new Error("Metadata upload failed. Check server API configuration.");
+    }
+
     const result = await response.json();
     if (!response.ok) {
-      throw new Error(result.error || "Metadata upload failed.");
+      throw new Error(result.error || "Metadata upload failed. Check server API configuration.");
     }
 
     return result as MetadataUploadResponse;
