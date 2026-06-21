@@ -85,6 +85,11 @@ function cacheDiscoveredTokenIds(tokenIds: string[]) {
   localStorage.setItem(DISCOVERED_TOKEN_IDS_CACHE_KEY, JSON.stringify(uniqueTokenIds));
 }
 
+export function rememberDiscoveredTokenId(tokenId: string) {
+  if (!/^\d+$/.test(tokenId)) return;
+  cacheDiscoveredTokenIds([...getCachedDiscoveredTokenIds(), tokenId]);
+}
+
 async function getNftDiscoveryStartBlock(): Promise<bigint | null> {
   if (CONTRACTS.NFT.deploymentBlock !== undefined) {
     return BigInt(CONTRACTS.NFT.deploymentBlock);
@@ -358,6 +363,8 @@ export async function fetchOnchainCards(): Promise<OnchainCardsResult> {
           attributes: metadataAttributes,
           creator: eventCreator || owner,
           createdAt: new Date(1716500000000 + Number(tokenId) * 86400000).toISOString(),
+          metadataURI: tokenURI || undefined,
+          syncStatus: "confirmed",
           // Kept for backwards compatibility with old components
           discordId: discordId || eventCategoryId,
           discordUsername: discordUsername || eventName || `Arcane Artifact #${tokenIdStr}`,

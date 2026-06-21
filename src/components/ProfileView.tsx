@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, ReactNode, CSSProperties } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Copy, Check, Wallet, History, Sparkles, Filter, Search, ChevronRight } from 'lucide-react';
 import { getSavedState, saveState } from '../lib/mockData';
-import { ArcaneNFT, ActivityLog } from '../types';
+import { ArcaneNFT, ActivityLog, OnchainSyncState } from '../types';
 
 // Custom reusable Glass Container representing Layered Glass Treatment
 interface GlassContainerProps {
@@ -173,9 +173,10 @@ export function WalletBalanceCard({ balance, usdValueString }: WalletBalanceCard
 interface ProfileViewProps {
   setCurrentView: (view: string) => void;
   setSelectedCardId: (id: string | null) => void;
+  onchainSync: OnchainSyncState;
 }
 
-export function ProfileView({ setCurrentView, setSelectedCardId }: ProfileViewProps) {
+export function ProfileView({ setCurrentView, setSelectedCardId, onchainSync }: ProfileViewProps) {
   const [state, setState] = useState(getSavedState());
 
   // Periodically refresh items from shared persistent store
@@ -293,6 +294,14 @@ export function ProfileView({ setCurrentView, setSelectedCardId }: ProfileViewPr
     if (activeTab === "offers") return activeOffers.length;
     return activityLogsDisplay.length;
   }, [activeTab, collectedCardsDisplay.length, createdCardsDisplay.length, activeOffers.length, activityLogsDisplay.length]);
+
+  const isNftTab = activeTab === "collected" || activeTab === "created";
+  const isDiscoveryLoading = isNftTab && state.cards.length === 0 && (
+    onchainSync.stage === "initial_loading" ||
+    onchainSync.stage === "background_refreshing"
+  );
+  const isDiscoveryFailedEmpty = isNftTab && state.cards.length === 0 && onchainSync.stage === "failed_refresh";
+  const isSyncingWithCachedCards = isNftTab && state.cards.length > 0 && onchainSync.stage === "background_refreshing";
 
   return (
     <div 
@@ -455,7 +464,39 @@ export function ProfileView({ setCurrentView, setSelectedCardId }: ProfileViewPr
             {activeTab === "collected" || activeTab === "created" ? (
               
               // Beautiful responsive NFT Grid with luxury soft elevation only, no hard borders
-              activeDisplayList.length === 0 ? (
+              isDiscoveryLoading ? (
+                <div className="py-28 text-center flex flex-col items-center justify-center">
+                  <Sparkles className="text-cyan-300/40 mb-4 animate-pulse" size={28} />
+                  <p 
+                    className="text-white/70 text-[15px] tracking-widest uppercase mb-1.5"
+                    style={{ fontFamily: 'Forum, "Forum", serif' }}
+                  >
+                    Loading ARCANE NFTs from Arc Testnet...
+                  </p>
+                  <p 
+                    className="text-[11px] text-white/30 max-w-sm mx-auto leading-relaxed"
+                    style={{ fontFamily: 'Forum, "Forum", serif', letterSpacing: '0.04em' }}
+                  >
+                    This can take a moment while reading contract events.
+                  </p>
+                </div>
+              ) : isDiscoveryFailedEmpty ? (
+                <div className="py-28 text-center flex flex-col items-center justify-center">
+                  <Sparkles className="text-amber-300/40 mb-4 animate-pulse" size={28} />
+                  <p 
+                    className="text-white/70 text-[15px] tracking-widest uppercase mb-1.5"
+                    style={{ fontFamily: 'Forum, "Forum", serif' }}
+                  >
+                    Syncing onchain NFTs...
+                  </p>
+                  <p 
+                    className="text-[11px] text-white/30 max-w-sm mx-auto leading-relaxed"
+                    style={{ fontFamily: 'Forum, "Forum", serif', letterSpacing: '0.04em' }}
+                  >
+                    Onchain data could not refresh yet. ARCANE will keep trying.
+                  </p>
+                </div>
+              ) : activeDisplayList.length === 0 ? (
                 <div className="py-28 text-center flex flex-col items-center justify-center">
                   <Sparkles className="text-white/15 mb-4 animate-pulse" size={28} />
                   <p 
@@ -472,8 +513,17 @@ export function ProfileView({ setCurrentView, setSelectedCardId }: ProfileViewPr
                   </p>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-[24px]">
-                  {activeDisplayList.map((card) => {
+                <>
+                  {isSyncingWithCachedCards && (
+                    <div 
+                      className="mb-5 rounded-full border border-cyan-400/15 bg-cyan-500/5 px-4 py-2 text-[10px] uppercase tracking-widest text-cyan-100/75 w-fit"
+                      style={{ fontFamily: 'Forum, "Forum", serif' }}
+                    >
+                      Syncing latest onchain state...
+                    </div>
+                  )}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-[24px]">
+                    {activeDisplayList.map((card) => {
                     const rarityAttr = card.attributes && card.attributes.find(attr => attr.trait_type.toLowerCase() === "rarity")?.value || "COMMON";
                     const isCardOwnedByUser = !state.walletConnected || card.owner.toLowerCase() === state.walletAddress.toLowerCase();
                     
@@ -544,8 +594,9 @@ export function ProfileView({ setCurrentView, setSelectedCardId }: ProfileViewPr
 
                       </div>
                     );
-                  })}
-                </div>
+                    })}
+                  </div>
+                </>
               )
 
             ) : activeTab === "offers" ? (

@@ -6,7 +6,7 @@ import { decodeEventLog, parseEther } from 'viem';
 import { getSavedState, saveState } from '../lib/mockData';
 import { ArcaneNFT, ArcaneAttribute, ActivityLog } from '../types';
 import { CONTRACTS } from '../lib/config';
-import { publicClient } from '../lib/onchain';
+import { publicClient, rememberDiscoveredTokenId } from '../lib/onchain';
 
 interface CreateViewProps {
   setCurrentView: (view: string) => void;
@@ -244,9 +244,12 @@ export function CreateView({ setCurrentView, setSelectedCardId }: CreateViewProp
         const onchainNftItem: ArcaneNFT = {
           ...newNftItem,
           tokenId: mintedTokenId,
+          metadataURI: metadataUpload.metadataURI,
+          syncStatus: "syncing",
           invalidOnchain: false,
           localOnly: false
         };
+        rememberDiscoveredTokenId(mintedTokenId);
 
         const newLog: ActivityLog = {
           id: "log_" + Date.now(),

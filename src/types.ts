@@ -19,6 +19,8 @@ export interface ArcaneNFT {
   createdAt: string;
   invalidOnchain?: boolean;
   localOnly?: boolean;
+  metadataURI?: string;
+  syncStatus?: "syncing" | "confirmed";
 
   // Backwards compatibility properties for standard components
   discordId?: string;
@@ -34,6 +36,19 @@ export interface ArcaneNFT {
 }
 
 export type RitualCard = ArcaneNFT;
+
+export type OnchainSyncStage =
+  | "initial_loading"
+  | "background_refreshing"
+  | "partial_refresh"
+  | "failed_refresh"
+  | "completed_refresh";
+
+export interface OnchainSyncState {
+  stage: OnchainSyncStage;
+  message: string;
+  hasCompletedInitialLoad: boolean;
+}
 
 export interface CardOffer {
   offerId: string;

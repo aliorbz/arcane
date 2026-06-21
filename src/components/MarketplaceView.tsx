@@ -3,15 +3,16 @@ import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { Search, SlidersHorizontal, Grid, AlertTriangle, Tag, Trash2, Hand, X, ShoppingCart, Heart } from 'lucide-react';
 import { getSavedState, ROLE_CONFIGS } from '../lib/mockData';
-import { RitualCard } from '../types';
+import { OnchainSyncState, RitualCard } from '../types';
 import { useAccount } from 'wagmi';
 
 interface MarketplaceViewProps {
   setCurrentView: (view: string) => void;
   setSelectedCardId: (id: string | null) => void;
+  onchainSync: OnchainSyncState;
 }
 
-export function MarketplaceView({ setCurrentView, setSelectedCardId }: MarketplaceViewProps) {
+export function MarketplaceView({ setCurrentView, setSelectedCardId, onchainSync }: MarketplaceViewProps) {
   const { isConnected } = useAccount();
   const [state, setState] = useState(getSavedState());
 
@@ -218,6 +219,12 @@ export function MarketplaceView({ setCurrentView, setSelectedCardId }: Marketpla
   }, [state.cards, search, filterRole, activeCategoryFilter, priceMin, priceMax, statusFilter, sortOption]);
 
   const rolesPills = ["All NFTs", "Art", "Gaming", "Music", "Photography"];
+  const isDiscoveryLoading = state.cards.length === 0 && (
+    onchainSync.stage === "initial_loading" ||
+    onchainSync.stage === "background_refreshing"
+  );
+  const isDiscoveryFailedEmpty = state.cards.length === 0 && onchainSync.stage === "failed_refresh";
+  const isSyncingWithCachedCards = state.cards.length > 0 && onchainSync.stage === "background_refreshing";
 
   const triggerSearchRefinement = () => {
     showNotification("⚡ Search Filters Refined!");
@@ -566,7 +573,37 @@ export function MarketplaceView({ setCurrentView, setSelectedCardId }: Marketpla
             </div>
 
             {/* Cards Grid Component matching Screen 2 structure */}
-            {filteredAndSortedCards.length === 0 ? (
+            {isSyncingWithCachedCards && (
+              <div className="mb-4 rounded-2xl border border-cyan-400/15 bg-cyan-500/5 px-4 py-3 text-xs font-mono uppercase tracking-widest text-cyan-100/80">
+                Syncing latest onchain state...
+              </div>
+            )}
+
+            {isDiscoveryLoading ? (
+              <div className="py-24 text-center rounded-[32px] bg-black/20 border border-cyan-400/10 border-dashed flex flex-col justify-center items-center p-6">
+                <div className="w-12 h-12 rounded-2xl bg-cyan-400/5 border border-cyan-400/15 flex items-center justify-center text-cyan-300 mb-4 animate-pulse">
+                  <Grid size={18} />
+                </div>
+                <h3 className="font-extrabold uppercase tracking-tight text-white mb-1 leading-snug">
+                  Loading ARCANE NFTs from Arc Testnet...
+                </h3>
+                <p className="text-xs sm:text-xs text-white/40 max-w-sm font-semibold tracking-wide">
+                  This can take a moment while reading contract events.
+                </p>
+              </div>
+            ) : isDiscoveryFailedEmpty ? (
+              <div className="py-24 text-center rounded-[32px] bg-black/20 border border-amber-400/10 border-dashed flex flex-col justify-center items-center p-6">
+                <div className="w-12 h-12 rounded-2xl bg-amber-400/5 border border-amber-400/15 flex items-center justify-center text-amber-300 mb-4">
+                  <AlertTriangle size={18} />
+                </div>
+                <h3 className="font-extrabold uppercase tracking-tight text-white mb-1 leading-snug">
+                  Syncing onchain NFTs...
+                </h3>
+                <p className="text-xs sm:text-xs text-white/40 max-w-sm font-semibold tracking-wide">
+                  Onchain data could not refresh yet. ARCANE will keep trying.
+                </p>
+              </div>
+            ) : filteredAndSortedCards.length === 0 ? (
               <div className="py-24 text-center rounded-[32px] bg-black/20 border border-white/5 border-dashed flex flex-col justify-center items-center p-6">
                 <div className="w-12 h-12 rounded-2xl bg-white/[0.02] border border-white/5 flex items-center justify-center text-white/30 mb-4 animate-bounce">
                   ⚠

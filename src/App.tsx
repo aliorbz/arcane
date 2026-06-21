@@ -10,6 +10,7 @@ import { ChatAIView } from './components/ChatAIView';
 import { getSavedState, saveState, ROLE_CONFIGS } from './lib/mockData';
 import { RITUAL_NETWORK } from './lib/config';
 import { fetchOnchainCards, flagInvalidLocalCards } from './lib/onchain';
+import { OnchainSyncState, RitualCard } from './types';
 
 export default function App() {
   const [currentView, setCurrentView] = useState<string>('home');
@@ -29,6 +30,16 @@ export default function App() {
   // Core wallet and mock storage states
   const [session, setSession] = useState(getSavedState());
   const [onchainRefreshWarning, setOnchainRefreshWarning] = useState<string | null>(null);
+  const [onchainSyncState, setOnchainSyncState] = useState<OnchainSyncState>(() => {
+    const saved = getSavedState();
+    return {
+      stage: saved.cards.length > 0 ? "background_refreshing" : "initial_loading",
+      message: saved.cards.length > 0
+        ? "Syncing latest onchain state..."
+        : "Loading ARCANE NFTs from Arc Testnet...",
+      hasCompletedInitialLoad: saved.cards.length > 0,
+    };
+  });
 
   // Synchronise RainbowKit connection updates with local storage session nicely
   useEffect(() => {
@@ -102,7 +113,27 @@ export default function App() {
   // Background poller for live block contract reads
   useEffect(() => {
     async function loadOnchain() {
-      const onchainResult = await fetchOnchainCards();
+      const stateBeforeFetch = getSavedState();
+      setOnchainSyncState(prev => ({
+        stage: prev.hasCompletedInitialLoad || stateBeforeFetch.cards.length > 0 ? "background_refreshing" : "initial_loading",
+        message: prev.hasCompletedInitialLoad || stateBeforeFetch.cards.length > 0
+          ? "Syncing latest onchain state..."
+          : "Loading ARCANE NFTs from Arc Testnet...",
+        hasCompletedInitialLoad: prev.hasCompletedInitialLoad || stateBeforeFetch.cards.length > 0,
+      }));
+
+      let onchainResult;
+      try {
+        onchainResult = await fetchOnchainCards();
+      } catch {
+        setOnchainSyncState(prev => ({
+          stage: "failed_refresh",
+          message: "Onchain NFT refresh failed. Showing last known state.",
+          hasCompletedInitialLoad: prev.hasCompletedInitialLoad,
+        }));
+        setOnchainRefreshWarning("Some onchain data could not refresh. Showing last known state.");
+        return;
+      }
       const onchainCards = onchainResult.cards;
       const currentState = getSavedState();
       const checkedLocalCards = await flagInvalidLocalCards(currentState.cards, onchainCards);
@@ -122,9 +153,14 @@ export default function App() {
 
       if (partialRefreshShrankCards) {
         setOnchainRefreshWarning(refreshWarning);
+        setOnchainSyncState(prev => ({
+          stage: "partial_refresh",
+          message: refreshWarning,
+          hasCompletedInitialLoad: prev.hasCompletedInitialLoad || currentState.cards.length > 0,
+        }));
         if (onchainCards.length > 0) {
           setSession(prev => {
-            const incomingByTokenId = new Map(onchainCards.map(card => [card.tokenId, card]));
+            const incomingByTokenId = new Map<string, RitualCard>(onchainCards.map(card => [card.tokenId, card]));
             const updatedCards = prev.cards.map(card => {
               const onchainCard = incomingByTokenId.get(card.tokenId);
               if (!onchainCard) return card;
@@ -159,6 +195,13 @@ export default function App() {
       }
 
       setOnchainRefreshWarning(onchainResult.complete ? null : refreshWarning);
+      setOnchainSyncState(prev => ({
+        stage: onchainResult.complete ? "completed_refresh" : "partial_refresh",
+        message: onchainResult.complete
+          ? "Onchain NFT sync complete."
+          : refreshWarning,
+        hasCompletedInitialLoad: true,
+      }));
 
       if (onchainCards.length > 0 || localCardsChanged) {
         setSession(prev => {
@@ -184,8 +227,12 @@ export default function App() {
               traits: localCard.traits || onchainCard.traits,
             };
           });
-          // Local storage may enrich metadata only. Ownership/listing presence comes from onchain cards.
-          const merged = enrichedOnchainCards;
+          const syncingLocalCards = currentState.cards.filter(card =>
+            card.syncStatus === "syncing" &&
+            !enrichedOnchainCards.some(onchainCard => onchainCard.tokenId === card.tokenId)
+          );
+          // Local storage may enrich metadata only. Syncing just-minted cards stay visible until onchain discovery confirms them.
+          const merged = [...syncingLocalCards, ...enrichedOnchainCards];
           const updated = {
             ...prev,
             cards: merged
@@ -253,12 +300,14 @@ export default function App() {
           <MarketplaceView
             setCurrentView={setCurrentView}
             setSelectedCardId={setSelectedCardId}
+            onchainSync={onchainSyncState}
           />
         )}
         {currentView === 'profile' && (
           <ProfileView
             setCurrentView={setCurrentView}
             setSelectedCardId={setSelectedCardId}
+            onchainSync={onchainSyncState}
           />
         )}
         {currentView === 'create' && (
