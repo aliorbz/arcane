@@ -224,7 +224,6 @@ export function MarketplaceView({ setCurrentView, setSelectedCardId, onchainSync
     onchainSync.stage === "background_refreshing"
   );
   const isDiscoveryFailedEmpty = state.cards.length === 0 && onchainSync.stage === "failed_refresh";
-  const isSyncingWithCachedCards = state.cards.length > 0 && onchainSync.stage === "background_refreshing";
 
   const triggerSearchRefinement = () => {
     showNotification("⚡ Search Filters Refined!");
@@ -573,12 +572,6 @@ export function MarketplaceView({ setCurrentView, setSelectedCardId, onchainSync
             </div>
 
             {/* Cards Grid Component matching Screen 2 structure */}
-            {isSyncingWithCachedCards && (
-              <div className="mb-4 rounded-2xl border border-cyan-400/15 bg-cyan-500/5 px-4 py-3 text-xs font-mono uppercase tracking-widest text-cyan-100/80">
-                Syncing latest onchain state...
-              </div>
-            )}
-
             {isDiscoveryLoading ? (
               <div className="py-24 text-center rounded-[32px] bg-black/20 border border-cyan-400/10 border-dashed flex flex-col justify-center items-center p-6">
                 <div className="w-12 h-12 rounded-2xl bg-cyan-400/5 border border-cyan-400/15 flex items-center justify-center text-cyan-300 mb-4 animate-pulse">

@@ -49,8 +49,10 @@ export type OnchainCardsResult = {
 
 const LOG_CHUNK_SIZE = 10_000n;
 const LOG_CHUNK_DELAY_MS = 150;
+const BACKGROUND_DISCOVERY_REFRESH_MS = 120_000;
 const DISCOVERED_TOKEN_IDS_CACHE_KEY = "arcane_discovered_token_ids";
 let discoveryRefreshInFlight: Promise<void> | null = null;
+let lastDiscoveryRefreshAt = 0;
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -163,6 +165,9 @@ async function fetchArtifactForgedLogs(): Promise<{
 
 function refreshDiscoveredTokenIdCache() {
   if (discoveryRefreshInFlight) return;
+  const now = Date.now();
+  if (now - lastDiscoveryRefreshAt < BACKGROUND_DISCOVERY_REFRESH_MS) return;
+  lastDiscoveryRefreshAt = now;
 
   discoveryRefreshInFlight = fetchArtifactForgedLogs()
     .then(result => {

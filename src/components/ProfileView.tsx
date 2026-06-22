@@ -301,7 +301,6 @@ export function ProfileView({ setCurrentView, setSelectedCardId, onchainSync }: 
     onchainSync.stage === "background_refreshing"
   );
   const isDiscoveryFailedEmpty = isNftTab && state.cards.length === 0 && onchainSync.stage === "failed_refresh";
-  const isSyncingWithCachedCards = isNftTab && state.cards.length > 0 && onchainSync.stage === "background_refreshing";
 
   return (
     <div 
@@ -514,14 +513,6 @@ export function ProfileView({ setCurrentView, setSelectedCardId, onchainSync }: 
                 </div>
               ) : (
                 <>
-                  {isSyncingWithCachedCards && (
-                    <div 
-                      className="mb-5 rounded-full border border-cyan-400/15 bg-cyan-500/5 px-4 py-2 text-[10px] uppercase tracking-widest text-cyan-100/75 w-fit"
-                      style={{ fontFamily: 'Forum, "Forum", serif' }}
-                    >
-                      Syncing latest onchain state...
-                    </div>
-                  )}
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-[24px]">
                     {activeDisplayList.map((card) => {
                     const rarityAttr = card.attributes && card.attributes.find(attr => attr.trait_type.toLowerCase() === "rarity")?.value || "COMMON";

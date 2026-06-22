@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAccount, useBalance, useDisconnect } from 'wagmi';
 import { Navbar } from './components/Navbar';
 import { HomeView } from './components/HomeView';
@@ -33,13 +33,79 @@ export default function App() {
   const [onchainSyncState, setOnchainSyncState] = useState<OnchainSyncState>(() => {
     const saved = getSavedState();
     return {
-      stage: saved.cards.length > 0 ? "background_refreshing" : "initial_loading",
+      stage: saved.cards.length > 0 ? "completed_refresh" : "initial_loading",
       message: saved.cards.length > 0
-        ? "Syncing latest onchain state..."
+        ? ""
         : "Loading ARCANE NFTs from Arc Testnet...",
       hasCompletedInitialLoad: saved.cards.length > 0,
     };
   });
+  const syncDelayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const syncMinimumTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const syncIndicatorShownAtRef = useRef(0);
+  const syncIndicatorVisibleRef = useRef(false);
+
+  const clearSyncDelay = () => {
+    if (syncDelayTimerRef.current) {
+      clearTimeout(syncDelayTimerRef.current);
+      syncDelayTimerRef.current = null;
+    }
+  };
+
+  const beginOnchainRefresh = (hasVisibleCards: boolean) => {
+    clearSyncDelay();
+    if (syncMinimumTimerRef.current) {
+      clearTimeout(syncMinimumTimerRef.current);
+      syncMinimumTimerRef.current = null;
+    }
+
+    if (!hasVisibleCards) {
+      syncIndicatorVisibleRef.current = true;
+      syncIndicatorShownAtRef.current = Date.now();
+      setOnchainSyncState(prev => ({
+        stage: "initial_loading",
+        message: "Loading ARCANE NFTs from Arc Testnet...",
+        hasCompletedInitialLoad: prev.hasCompletedInitialLoad,
+      }));
+      return;
+    }
+
+    syncDelayTimerRef.current = setTimeout(() => {
+      syncIndicatorVisibleRef.current = true;
+      syncIndicatorShownAtRef.current = Date.now();
+      setOnchainSyncState(prev => ({
+        stage: "background_refreshing",
+        message: "",
+        hasCompletedInitialLoad: true,
+      }));
+    }, 800);
+  };
+
+  const finishOnchainRefresh = (nextState: OnchainSyncState) => {
+    clearSyncDelay();
+
+    const applyState = () => {
+      syncIndicatorVisibleRef.current = false;
+      setOnchainSyncState(nextState);
+    };
+
+    if (!syncIndicatorVisibleRef.current) {
+      applyState();
+      return;
+    }
+
+    const elapsed = Date.now() - syncIndicatorShownAtRef.current;
+    const remaining = Math.max(0, 2000 - elapsed);
+    if (remaining === 0) {
+      applyState();
+      return;
+    }
+
+    if (syncMinimumTimerRef.current) {
+      clearTimeout(syncMinimumTimerRef.current);
+    }
+    syncMinimumTimerRef.current = setTimeout(applyState, remaining);
+  };
 
   // Synchronise RainbowKit connection updates with local storage session nicely
   useEffect(() => {
@@ -114,24 +180,24 @@ export default function App() {
   useEffect(() => {
     async function loadOnchain() {
       const stateBeforeFetch = getSavedState();
-      setOnchainSyncState(prev => ({
-        stage: prev.hasCompletedInitialLoad || stateBeforeFetch.cards.length > 0 ? "background_refreshing" : "initial_loading",
-        message: prev.hasCompletedInitialLoad || stateBeforeFetch.cards.length > 0
-          ? "Syncing latest onchain state..."
-          : "Loading ARCANE NFTs from Arc Testnet...",
-        hasCompletedInitialLoad: prev.hasCompletedInitialLoad || stateBeforeFetch.cards.length > 0,
-      }));
+      const hasVisibleCards = stateBeforeFetch.cards.length > 0;
+      beginOnchainRefresh(hasVisibleCards);
 
       let onchainResult;
       try {
         onchainResult = await fetchOnchainCards();
       } catch {
-        setOnchainSyncState(prev => ({
-          stage: "failed_refresh",
-          message: "Onchain NFT refresh failed. Showing last known state.",
-          hasCompletedInitialLoad: prev.hasCompletedInitialLoad,
-        }));
-        setOnchainRefreshWarning("Some onchain data could not refresh. Showing last known state.");
+        const failedMessage = hasVisibleCards
+          ? ""
+          : "Onchain NFT refresh failed. Showing last known state.";
+        finishOnchainRefresh({
+          stage: hasVisibleCards ? "completed_refresh" : "failed_refresh",
+          message: failedMessage,
+          hasCompletedInitialLoad: hasVisibleCards,
+        });
+        if (!hasVisibleCards) {
+          setOnchainRefreshWarning("Some data may be outdated.");
+        }
         return;
       }
       const onchainCards = onchainResult.cards;
@@ -149,15 +215,15 @@ export default function App() {
         /^\d+$/.test(card.tokenId) && !card.localOnly && !card.invalidOnchain
       );
       const partialRefreshShrankCards = !onchainResult.complete && onchainCards.length < currentOnchainCards.length;
-      const refreshWarning = "Some onchain data could not refresh. Showing last known state.";
+      const refreshWarning = "Some data may be outdated.";
 
       if (partialRefreshShrankCards) {
         setOnchainRefreshWarning(refreshWarning);
-        setOnchainSyncState(prev => ({
+        finishOnchainRefresh({
           stage: "partial_refresh",
           message: refreshWarning,
-          hasCompletedInitialLoad: prev.hasCompletedInitialLoad || currentState.cards.length > 0,
-        }));
+          hasCompletedInitialLoad: currentState.cards.length > 0,
+        });
         if (onchainCards.length > 0) {
           setSession(prev => {
             const incomingByTokenId = new Map<string, RitualCard>(onchainCards.map(card => [card.tokenId, card]));
@@ -195,13 +261,13 @@ export default function App() {
       }
 
       setOnchainRefreshWarning(onchainResult.complete ? null : refreshWarning);
-      setOnchainSyncState(prev => ({
+      finishOnchainRefresh({
         stage: onchainResult.complete ? "completed_refresh" : "partial_refresh",
         message: onchainResult.complete
-          ? "Onchain NFT sync complete."
+          ? ""
           : refreshWarning,
         hasCompletedInitialLoad: true,
-      }));
+      });
 
       if (onchainCards.length > 0 || localCardsChanged) {
         setSession(prev => {
@@ -243,8 +309,14 @@ export default function App() {
       }
     }
     loadOnchain();
-    const interval = setInterval(loadOnchain, 7000);
-    return () => clearInterval(interval);
+    const interval = setInterval(loadOnchain, 60000);
+    return () => {
+      clearInterval(interval);
+      clearSyncDelay();
+      if (syncMinimumTimerRef.current) {
+        clearTimeout(syncMinimumTimerRef.current);
+      }
+    };
   }, []);
 
   // Periodic state refreshing watcher for nested states
